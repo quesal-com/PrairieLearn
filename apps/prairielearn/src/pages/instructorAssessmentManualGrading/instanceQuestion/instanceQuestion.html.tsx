@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { formatDateYMDHM } from '@prairielearn/formatter';
-import { html, unsafeHtml } from '@prairielearn/html';
+import { html } from '@prairielearn/html';
 import { markdownToHtml } from '@prairielearn/markdown';
 import { hydrateHtml } from '@prairielearn/react/server';
 
@@ -9,17 +9,13 @@ import { InstructorInfoPanel } from '../../../components/InstructorInfoPanel.js'
 import { PageLayout } from '../../../components/PageLayout.js';
 import { PersonalNotesPanel } from '../../../components/PersonalNotesPanel.js';
 import { QuestionContainer } from '../../../components/QuestionContainer.js';
+import { QuestionHeadContents } from '../../../components/QuestionHeadContents.js';
 import { RubricSettings } from '../../../components/RubricSettings.js';
 import type {
   AiGradingGeneralStats,
   InstanceQuestionAIGradingInfo,
 } from '../../../ee/lib/ai-grading/types.js';
-import {
-  assetPath,
-  compiledScriptTag,
-  compiledStylesheetTag,
-  nodeModulesAssetPath,
-} from '../../../lib/assets.js';
+import { compiledStylesheetTag } from '../../../lib/assets.js';
 import { StaffAssessmentQuestionSchema } from '../../../lib/client/safe-db-types.js';
 import { getAssessmentManualGradingUrl } from '../../../lib/client/url.js';
 import { GradingJobSchema, type InstanceQuestionGroup, type User } from '../../../lib/db-types.js';
@@ -255,15 +251,12 @@ export function InstanceQuestion({
     },
     headContent: html`
       ${compiledStylesheetTag('instructorAssessmentManualGradingInstanceQuestion.css')}
-      <meta
-        name="mathjax-fonts-path"
-        content="${nodeModulesAssetPath('@mathjax/mathjax-newcm-font')}"
-      />
-      ${compiledScriptTag('question.ts')}
-      <script defer src="${nodeModulesAssetPath('mathjax/tex-svg.js')}"></script>
-      <script>
-        document.urlPrefix = '${resLocals.urlPrefix}';
-      </script>
+      ${QuestionHeadContents({
+        extraHeadersHtml: resLocals.extraHeadersHtml,
+        legacyScriptSource: 'public',
+        questionType: resLocals.question.type,
+        urlPrefix: resLocals.urlPrefix,
+      })}
       <style>
         .pl-kbd {
           display: inline-block;
@@ -282,17 +275,6 @@ export function InstanceQuestion({
           margin-bottom: 0;
         }
       </style>
-      ${
-        resLocals.question.type !== 'Freeform'
-          ? html`
-              <script src="${assetPath('javascripts/lodash.min.js')}"></script>
-              <script src="${assetPath('javascripts/require.js')}"></script>
-              <script src="${assetPath('localscripts/question.js')}"></script>
-              <script src="${assetPath('localscripts/questionCalculation.js')}"></script>
-            `
-          : ''
-      }
-      ${unsafeHtml(resLocals.extraHeadersHtml)}
     `,
     content: html`
       <h1 class="visually-hidden">Instance Question Manual Grading</h1>
