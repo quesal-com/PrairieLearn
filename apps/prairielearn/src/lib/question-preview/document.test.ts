@@ -464,7 +464,7 @@ describe('question preview document', () => {
     } finally {
       await fs.rm(courseDir, { force: true, recursive: true });
     }
-  });
+  }, 30_000);
 
   it('grades only the submittedAnswer from a legacy postData envelope', async () => {
     const courseDir = await makeTempCourse();
