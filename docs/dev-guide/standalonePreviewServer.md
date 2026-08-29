@@ -1,9 +1,9 @@
 # Standalone Preview Server
 
-The Standalone Preview Server is an experimental way to render PrairieLearn questions directly
-from course files. It does not start PostgreSQL or the full PrairieLearn application. Authoring
-tools can start one process with zero or more courses, create Local Preview Sessions at runtime,
-and open session-scoped browser URLs.
+The Standalone Preview Server is an experimental way to render PrairieLearn questions and simulate
+one assessment attempt directly from course files. It does not start PostgreSQL or the full
+PrairieLearn application. Authoring tools can start one process with zero or more courses, create
+Local Preview Sessions at runtime, and open session-scoped browser URLs.
 
 The HTTP contract is versioned as `experimental-1`. It is a breaking replacement for the earlier
 single-course proof of concept.
@@ -73,8 +73,10 @@ curl http://127.0.0.1:4310/metadata
 ```
 
 Metadata reports `apiVersion: "experimental-1"`, the PrairieLearn package version, the session
-endpoint, available and default render modes, grading, Preview Workspace availability and
-controls, the question timeout, worker count, and enabled workspace limits.
+endpoint, available and default render modes, grading, assessment-preview availability, Preview
+Workspace availability and controls, the question timeout, worker count, and enabled workspace
+limits. Check `features.assessmentPreview === true` before using the additive assessment routes;
+an `experimental-1` server that omits the field still supports its question-preview contract.
 
 ## Optional control-plane authentication
 
@@ -172,11 +174,101 @@ The server supports every Source Question Type:
 Course-specific legacy browser files and type-default files are supported through bounded,
 traversal-safe resolution.
 
+## Preview an assessment
+
+Assessment preview is a database-free simulator for an author, not a local student account. It
+creates one in-memory Assessment Preview Run for one synthetic attempt, presents one selected
+question at a time, and discards the run with its Local Preview Session. The default
+`question-only` mode can sample an assessment and navigate its selected question bodies, but it
+cannot submit answers or finish-grade the run. Start in full render mode to exercise Internal
+grading:
+
+```sh
+pnpm --filter @prairielearn/prairielearn preview:server -- --render-mode full
+```
+
+An assessment source locator has two course-relative values:
+
+- `ciid` is the path below `courseInstances/` to the directory containing
+  `infoCourseInstance.json`.
+- `aid` is the path below that course instance's `assessments/` directory to the directory
+  containing `infoAssessment.json`.
+
+Both values may contain nested forward-slash-separated segments. The server rejects absolute
+paths, empty segments, `.` or `..` segments, backslashes, NULs, and symlink escapes. Locator
+validation operates on the decoded `ciid` and `aid` values. Consequently, a query-string client
+may transmit a nested locator with the separator percent-encoded, for example
+`ciid=2026%2Ffall&aid=module-one%2Fhomework-1`; normal query decoding turns those values into
+`2026/fall` and `module-one/homework-1` before validation. In the JSON request below, write the
+same separators as literal `/` characters.
+
+This locator convention is distinct from asset-path validation. Asset URLs use literal `/`
+characters between separately encoded path segments. An encoded `/` or backslash inside one asset
+segment, such as `%2F` or `%5C`, is rejected rather than treated as another level of the asset path.
+
+After creating a Local Preview Session, create or reuse a seeded run through its browser plane:
+
+```sh
+curl -X POST \
+  http://127.0.0.1:4310/preview-sessions/pvs_0123456789abcdefghijkl/assessment-preview-runs \
+  -H 'Content-Type: application/json' \
+  -d '{"locator":{"ciid":"2026/fall","aid":"module-one/homework-1"},"seed":"1","reuse":true}'
+```
+
+The response identifies the run and returns the session-scoped document to open:
+
+```json
+{
+  "assessmentPreviewRunId": "apr_0123456789abcdefghijkl",
+  "seed": "1",
+  "href": "/preview-sessions/pvs_0123456789abcdefghijkl/assessment-preview-runs/apr_0123456789abcdefghijkl/"
+}
+```
+
+Open `href` on the same server origin. Use the links and forms in that document for run navigation
+and grading instead of constructing child URLs. The Local Preview Session ID is the browser-plane
+capability, so the optional control-plane bearer token is deliberately absent from this request and
+from the rendered page.
+
+The same assessment definition and seed reproduce the same pool and alternative selection. A
+session owns at most one active run; requesting a different sample replaces its previous run.
+Relevant assessment or question source changes invalidate the active run instead of mixing old
+answers with new source. Create the sample again after editing. The Local Preview Extension does
+this automatically on refresh and preserves the seed until the author selects **New sample**.
+
+The simulator supports `Homework` and `Exam`, assessment text and scoped assets, seeded zone and
+pool selection, assessment-configured question preferences, attempt and point policies, and
+Internal grading through each question's native pipeline in full render mode. Modern
+`accessControl` is evaluated only where local inputs are authoritative: the default rule at index
+`0` and label-targeted trailing rules can use clearly simulated time, course roles, mode, labels,
+and PrairieTest reservations. When `accessControl` is absent, preview uses an explicitly labeled
+open local default. These limitations are intentional and visible in the run:
+
+- Legacy assessment `allowAccess` is unsupported.
+- Trailing student-specific `accessControl` rules without labels depend on enrollment targets
+  created during database sync. Preview reports them as unsupported and does not apply them.
+- Only local qids are resolved; shared questions are unsupported.
+- Manual points, External grading, and AI-assisted/manual grading remain unresolved. A run that
+  selects one of them reports an incomplete total instead of treating it as zero.
+- Group membership and group-role view, submit, and navigation policies are unsupported. Preview
+  reports configured group policies instead of inventing a group or role.
+- Invalid assessment definitions detected by the database-free compiler block sampling and show
+  structured diagnostics. Unsupported features may still produce a deliberately incomplete run.
+- There is no real enrollment, roster, accommodation, PrairieTest orchestration, saved-answer
+  history, second student or attempt, gradebook write, or production Exam security.
+- The document is an authoring simulation, not an HTML or workflow replica of PrairieLearn's full
+  assessment pages.
+
+In the Local Preview Extension, open the assessment's exact `infoAssessment.json` file to select
+the assessment target. The preview toolbar shows the stable sample seed; **New sample** rerolls the
+seed. Opening another file below the assessment does not implicitly select that assessment.
+
 ## Render modes and Preview Answer Check
 
-`question-only` is the default. It renders the question body for embedding and does not show the
+`question-only` is the default. It renders question bodies for embedding and does not show the
 PrairieLearn card, title, grading button, answer panel, or submission panel. `POST` is unavailable
-in this mode.
+in this mode. An Assessment Preview Run can still be sampled, started, and navigated, but it cannot
+accept answers or finish-grade until the server is restarted in full mode.
 
 Start with full mode when the authoring experience needs Preview Answer Check:
 
@@ -194,18 +286,21 @@ Preview Answer Check uses each Source Question Type's native browser contract:
   consumes only the submitted answer and regenerates authoritative variant state from the URL
   seed.
 
-Answer checking is available only for internally graded questions in effective full mode.
-External and Manual grading are unavailable. Checking is stateless: the server creates no saved
-answers, submission history, assessment state, or gradebook state. Generated and submitted files
-remain available only in bounded memory under the owning Local Preview Session.
+Answer checking and assessment finish-grading are available only for internally graded questions
+in effective full mode. External and Manual grading are unavailable. On a standalone question
+route, checking remains stateless: it does not create or join an Assessment Preview Run,
+saved-answer history, or gradebook state. The separate assessment simulator described above keeps
+only its active run in memory. Generated and submitted files remain available only in bounded
+memory under the owning Local Preview Session.
 
 ## Resource URLs
 
 PrairieLearn-owned immutable public assets remain global at their normal paths, including
 `/assets/...` and required legacy Calculation modules under `/localscripts/calculationQuestion/...`.
 
-Course assets, question assets, declared legacy browser files, generated files, submission files,
-and Preview Workspace resources are emitted below the owning session:
+Course assets, course-instance and assessment assets, question assets, declared legacy browser
+files, generated files, submission files, and Preview Workspace resources are emitted below the
+owning session:
 
 ```text
 /preview-sessions/<id>/preview-render/clientFilesCourse/...
@@ -217,7 +312,9 @@ and Preview Workspace resources are emitted below the owning session:
 
 Rendered HTML already contains the correct scoped URLs. Integrations should proxy them unchanged
 instead of rewriting completed HTML. Malformed encodings, encoded separators, dot segments, NULs,
-backslashes, traversal, and symlink escapes are rejected before file lookup.
+backslashes, traversal, and symlink escapes are rejected before file lookup. Here, an encoded
+separator means `%2F` or `%5C` inside a single asset-path segment; it does not refer to standard
+query-string encoding of the `/` separators within an assessment locator value.
 
 ## Optional Preview Workspaces
 
