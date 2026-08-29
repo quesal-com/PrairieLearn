@@ -16,6 +16,7 @@ import express, {
 } from 'express';
 import asyncHandler from 'express-async-handler';
 
+import { registerAssessmentPreviewRoutes } from '../assessment-preview/http.js';
 import * as assets from '../assets.js';
 import { guessMimeType } from '../mime-type.js';
 import { APP_ROOT_PATH } from '../paths.js';
@@ -23,7 +24,7 @@ import { APP_ROOT_PATH } from '../paths.js';
 import { createQuestionPreviewAssetResolver } from './assets.js';
 import {
   InvalidLocalPreviewCourseError,
-  type LocalPreviewCourseSource,
+  type LocalPreviewAssessmentCourseSource,
   createLocalPreviewCourseSource,
 } from './course-source.js';
 import type { QuestionPreviewRenderMode } from './document.js';
@@ -559,7 +560,7 @@ function questionPreviewErrorHandler(): ErrorRequestHandler {
 }
 
 interface CreateQuestionPreviewAppParams {
-  courseSource: LocalPreviewCourseSource;
+  courseSource: LocalPreviewAssessmentCourseSource;
   httpOptions: QuestionPreviewServerHttpOptions;
   localPreviewGeneratedFiles: LocalPreviewGeneratedFiles;
   localPreviewSubmissionFiles: LocalPreviewSubmissionFiles;
@@ -608,6 +609,13 @@ function createQuestionPreviewApp({
     closeWorkspaceProxy = () => workspaceProxy.close();
   }
   registerQuestionPreviewWorkspaceRoutes(app, workspaceManager);
+  const assessmentPreviewRoutes = registerAssessmentPreviewRoutes({
+    app,
+    courseSource,
+    httpOptions,
+    runtime,
+    sessionPrefix,
+  });
 
   const startQuestionDeadline = (_req: Request, res: Response, next: NextFunction) => {
     let rejectExceeded: (err: Error) => void = () => {};
@@ -703,7 +711,12 @@ function createQuestionPreviewApp({
 
   app.use(questionPreviewErrorHandler());
 
-  return { app, closeWorkspaceProxy, workspaceUpgradeHandler };
+  return {
+    app,
+    closeAssessmentPreview: () => assessmentPreviewRoutes.close(),
+    closeWorkspaceProxy,
+    workspaceUpgradeHandler,
+  };
 }
 
 interface StartQuestionPreviewServerParams {
@@ -819,21 +832,26 @@ export async function startQuestionPreviewServer({
       throw err;
     }
 
-    const { app, closeWorkspaceProxy, workspaceUpgradeHandler } = createQuestionPreviewApp({
-      courseSource,
-      httpOptions,
-      localPreviewGeneratedFiles: runtime.localPreviewGeneratedFiles,
-      localPreviewSubmissionFiles: runtime.localPreviewSubmissionFiles,
-      runtime,
-      sessionPrefix,
-      urlPrefix: runtime.urlPrefix,
-      workspaceManager,
-    });
+    const { app, closeAssessmentPreview, closeWorkspaceProxy, workspaceUpgradeHandler } =
+      createQuestionPreviewApp({
+        courseSource,
+        httpOptions,
+        localPreviewGeneratedFiles: runtime.localPreviewGeneratedFiles,
+        localPreviewSubmissionFiles: runtime.localPreviewSubmissionFiles,
+        runtime,
+        sessionPrefix,
+        urlPrefix: runtime.urlPrefix,
+        workspaceManager,
+      });
 
     return {
-      beginClose: closeWorkspaceProxy,
+      beginClose() {
+        closeAssessmentPreview();
+        closeWorkspaceProxy();
+      },
       async close() {
         let closeError: unknown;
+        closeAssessmentPreview();
         closeWorkspaceProxy();
         try {
           await workspaceManager?.close();
@@ -903,6 +921,7 @@ export async function startQuestionPreviewServer({
       prairieLearnVersion: PRAIRIELEARN_VERSION,
       previewSessionsEndpoint: '/preview-sessions',
       features: {
+        assessmentPreview: true,
         renderModes: options.renderMode === 'full' ? ['question-only', 'full'] : ['question-only'],
         defaultRenderMode: options.renderMode,
         grading: options.renderMode === 'full',
