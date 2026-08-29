@@ -306,6 +306,47 @@ describe('question preview document', () => {
     }
   });
 
+  it('renders a variant with caller-resolved question preferences', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'demo/preferences';
+    await writeQuestionInfo(courseDir, qid, {
+      title: 'Assessment preferences',
+      topic: 'Testing',
+      type: 'v3',
+      uuid: '11111111-1111-4111-8111-111111111130',
+    });
+    await writeQuestionFile(
+      courseDir,
+      qid,
+      'question.html',
+      '<pl-question-panel><p>{{params.preview_mode}}</p></pl-question-panel>',
+    );
+    await writeQuestionFile(
+      courseDir,
+      qid,
+      'server.py',
+      [
+        'def generate(data):',
+        '    data["params"]["preview_mode"] = data["preferences"].get("mode", "default")',
+      ].join('\n'),
+    );
+
+    try {
+      await withInitializedDocumentRenderer(courseDir, async (renderer) => {
+        const result = await renderer.render({
+          preferences: { mode: 'assessment-configured' },
+          qid: parsePreviewQid(qid),
+          variantSeed: '1',
+        });
+
+        assert.equal(result.ok, true);
+        assert.match(result.documentHtml, /assessment-configured/);
+      });
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
   it('returns diagnostics only for fatal PrairieLearn prepare issues', async () => {
     const courseDir = await makeTempCourse();
     await writeQuestionInfo(courseDir, 'broken/render', {
@@ -510,6 +551,50 @@ describe('question preview document', () => {
         assert.equal(result.ok, true);
         assert.match(result.documentHtml, /data-testid="submission-block"/);
         assert.match(result.documentHtml, /100%/);
+      });
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('returns the effective normalized score for a checked answer', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'legacy/normalized-score';
+    await writeQuestionInfo(courseDir, qid, {
+      title: 'Normalized legacy score',
+      topic: 'Testing',
+      type: 'Calculation',
+      uuid: '11111111-1111-4111-8111-111111111131',
+    });
+    await writeQuestionFile(
+      courseDir,
+      qid,
+      'server.js',
+      [
+        'define([], function () {',
+        '  return {',
+        '    getData: function () { return { params: {}, trueAnswer: {} }; },',
+        '    gradeAnswer: function () { return { score: 0.75 }; }',
+        '  };',
+        '});',
+      ].join('\n'),
+    );
+
+    try {
+      await withInitializedDocumentRenderer(courseDir, async (renderer) => {
+        const result = await renderer.render({
+          qid: parsePreviewQid(qid),
+          submission: {
+            rawSubmittedAnswer: {
+              postData: JSON.stringify({ submittedAnswer: {} }),
+            },
+          },
+          variantSeed: '1',
+        });
+
+        nodeAssert.equal(result.ok, true);
+        assert.deepEqual(result.answerCheck, { kind: 'graded', score: 1 });
+        assert.equal('submission' in result, false);
       });
     } finally {
       await fs.rm(courseDir, { force: true, recursive: true });
@@ -792,6 +877,29 @@ describe('question preview document', () => {
     }
   });
 
+  it('returns an invalid outcome for an answer that cannot be graded', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'demo/invalid-answer';
+    await writeGradableQuestion(courseDir, qid, '11111111-1111-4111-8111-111111111132');
+
+    try {
+      await withInitializedDocumentRenderer(courseDir, async (renderer) => {
+        const result = await renderer.render({
+          qid: parsePreviewQid(qid),
+          submission: { rawSubmittedAnswer: { ans: 'banana' } },
+          variantSeed: '1',
+        });
+
+        nodeAssert.equal(result.ok, true);
+        assert.deepEqual(result.answerCheck, { kind: 'invalid' });
+        assert.equal('submission' in result, false);
+        assert.equal('rawSubmittedAnswer' in result, false);
+      });
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
   it('allocates a workspace and injects its URL for workspace questions', async () => {
     const courseDir = await makeTempCourse();
     await writeWorkspaceQuestion(
@@ -1055,6 +1163,33 @@ describe('question preview document', () => {
         assert.match(submitted.documentHtml, /External grading, which is not supported/);
         assert.match(submitted.documentHtml, /Only internally graded questions/);
         assert.notMatch(submitted.documentHtml, /submission-block/);
+      });
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('returns the grading method when answer checking is unsupported', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'external/answer-check-outcome';
+    await writeGradableQuestion(courseDir, qid, '11111111-1111-4111-8111-111111111133', {
+      info: { gradingMethod: 'External' },
+    });
+
+    try {
+      await withInitializedDocumentRenderer(courseDir, async (renderer) => {
+        const result = await renderer.render({
+          qid: parsePreviewQid(qid),
+          submission: { rawSubmittedAnswer: { ans: '2' } },
+          variantSeed: '1',
+        });
+
+        nodeAssert.equal(result.ok, true);
+        assert.deepEqual(result.answerCheck, {
+          gradingMethod: 'External',
+          kind: 'unsupported',
+        });
+        assert.equal('submission' in result, false);
       });
     } finally {
       await fs.rm(courseDir, { force: true, recursive: true });

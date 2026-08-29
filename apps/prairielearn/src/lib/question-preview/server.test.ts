@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import Docker from 'dockerode';
-import { assert, describe, it, vi } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 
 import * as assets from '../assets.js';
 
@@ -215,6 +215,54 @@ async function writeQuestion(courseDir: string, qid: string) {
   await writeQuestionFile(courseDir, qid, 'question.html', '<p>Runtime direct preview body</p>');
 }
 
+async function writeAssessmentPreviewFixture(
+  courseDir: string,
+  assessmentOverrides: Record<string, unknown> = {},
+) {
+  await fs.writeFile(
+    path.join(courseDir, 'infoCourse.json'),
+    JSON.stringify({
+      assessmentSets: [
+        { abbreviation: 'HW', color: 'green1', heading: 'Homeworks', name: 'Homework' },
+      ],
+      name: 'TST 101',
+      title: 'Assessment preview tests',
+      topics: [{ color: 'blue1', name: 'Testing' }],
+    }),
+  );
+  await writeQuestionInfo(courseDir, 'unit/question', {
+    gradingMethod: 'Internal',
+    preferences: { difficulty: { default: 'normal', type: 'string' } },
+    title: 'Selected question',
+    topic: 'Testing',
+    type: 'v3',
+    uuid: '11111111-1111-4111-8111-111111111194',
+  });
+  const courseInstanceDir = path.join(courseDir, 'courseInstances', '2026', 'fall');
+  const assessmentDir = path.join(courseInstanceDir, 'assessments', 'module one', 'homework 1');
+  await fs.mkdir(assessmentDir, { recursive: true });
+  await fs.writeFile(
+    path.join(courseInstanceDir, 'infoCourseInstance.json'),
+    JSON.stringify({
+      longName: 'Fall 2026',
+      uuid: '11111111-1111-4111-8111-111111111195',
+    }),
+  );
+  await fs.writeFile(
+    path.join(assessmentDir, 'infoAssessment.json'),
+    JSON.stringify({
+      number: '1',
+      set: 'Homework',
+      text: '<p>Assessment overview</p>',
+      title: 'Local homework',
+      type: 'Homework',
+      uuid: '11111111-1111-4111-8111-111111111196',
+      zones: [{ questions: [{ id: 'unit/question', points: 2 }] }],
+      ...assessmentOverrides,
+    }),
+  );
+}
+
 function serverUrl(started: Awaited<ReturnType<typeof startQuestionPreviewServer>>) {
   const address = started.server.address();
   if (address == null || typeof address === 'string') {
@@ -230,6 +278,18 @@ function startupSessionUrl(started: Awaited<ReturnType<typeof startQuestionPrevi
 
 function startupSessionPath(started: Awaited<ReturnType<typeof startQuestionPreviewServer>>) {
   return new URL(startupSessionUrl(started)).pathname;
+}
+
+async function startAssessmentPreviewRun(
+  started: Awaited<ReturnType<typeof startQuestionPreviewServer>>,
+  href: string,
+  body: Record<string, unknown> = {},
+) {
+  return await fetch(`${serverUrl(started)}${href}actions`, {
+    body: JSON.stringify({ action: 'start', revision: 0, ...body }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
 }
 
 async function requestRawPath(
@@ -478,6 +538,7 @@ describe('Local Preview Session contract', () => {
         prairieLearnVersion: '1.0.0',
         previewSessionsEndpoint: '/preview-sessions',
         features: {
+          assessmentPreview: true,
           defaultRenderMode: 'question-only',
           grading: false,
           renderModes: ['question-only'],
@@ -545,6 +606,7 @@ describe('Local Preview Session contract', () => {
         prairieLearnVersion: '1.0.0',
         previewSessionsEndpoint: '/preview-sessions',
         features: {
+          assessmentPreview: true,
           defaultRenderMode: 'full',
           grading: true,
           renderModes: ['question-only', 'full'],
@@ -2013,6 +2075,985 @@ describe('question preview server direct preview route', () => {
         assert.notEqual(response.status, 200, route.path);
         nodeAssert.doesNotMatch(body, /Preview only|"ok"|"payload"|"diagnostics"/, route.path);
       }
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('creates and reuses a session-scoped assessment preview run', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir);
+    const renderCalls: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          renderCalls.push(input);
+          return testSuccessDocument('<p>Assessment question body</p>');
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const requestBody = {
+        locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+        reuse: true,
+        seed: 'sample-seed',
+      };
+      const create = () =>
+        fetch(`${sessionUrl}/assessment-preview-runs`, {
+          body: JSON.stringify(requestBody),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        });
+
+      const created = await create();
+      assert.equal(created.status, 201);
+      const createdBody = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+        seed: string;
+      };
+      assert.match(createdBody.assessmentPreviewRunId, /^apr_[A-Za-z0-9_-]{22}$/);
+      assert.equal(createdBody.seed, 'sample-seed');
+      assert.equal(
+        createdBody.href,
+        `${startupSessionPath(started)}/assessment-preview-runs/${createdBody.assessmentPreviewRunId}/`,
+      );
+
+      const assessmentDescription = await fetch(
+        `${sessionUrl}/assessments?ciid=2026%2Ffall&aid=module%20one%2Fhomework%201`,
+      );
+      assert.equal(assessmentDescription.status, 200);
+      expect(await assessmentDescription.json()).toMatchObject({
+        assessment: { number: '1', title: 'Local homework', type: 'Homework' },
+      });
+
+      const reused = await create();
+      assert.equal(reused.status, 200);
+      assert.deepEqual(await reused.json(), createdBody);
+
+      const overview = await fetch(`${serverUrl(started)}${createdBody.href}`);
+      const overviewHtml = await overview.text();
+      assert.equal(overview.status, 200);
+      assert.match(overviewHtml, /Local homework/);
+      assert.match(overviewHtml, /Assessment overview/);
+      assert.match(overviewHtml, /Selected question/);
+      assert.match(overviewHtml, /Start assessment/);
+
+      const beforeStart = await fetch(
+        `${serverUrl(started)}${createdBody.href}questions/zone-1-pool-1-alternative-1`,
+        { redirect: 'manual' },
+      );
+      assert.equal(beforeStart.status, 303);
+
+      const start = await startAssessmentPreviewRun(started, createdBody.href);
+      assert.equal(start.status, 200);
+      expect(await start.json()).toMatchObject({ revision: 1, status: 'in_progress' });
+
+      const question = await fetch(
+        `${serverUrl(started)}${createdBody.href}questions/zone-1-pool-1-alternative-1`,
+      );
+      assert.equal(question.status, 200);
+      assert.match(await question.text(), /Assessment question body/);
+      expect(renderCalls).toEqual([
+        expect.objectContaining({
+          preferences: { difficulty: 'normal' },
+          qid: expect.objectContaining({ decoded: 'unit/question' }),
+          variantSeed: expect.any(String),
+        }),
+      ]);
+      const assessmentVariantSeed = (renderCalls[0] as { variantSeed: string }).variantSeed;
+      assert.match(assessmentVariantSeed, /^[0-9a-z]+$/);
+      assert.ok(Number.parseInt(assessmentVariantSeed, 36) >= 1);
+      assert.ok(Number.parseInt(assessmentVariantSeed, 36) <= 0xffff_ffff);
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('grades an assessment question and exposes the reduced run state', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir);
+    const submittedAnswers: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          if (input.submission != null) submittedAnswers.push(input.submission.rawSubmittedAnswer);
+          return {
+            ...testSuccessDocument('<p>Assessment question body</p>'),
+            ...(input.submission == null
+              ? {}
+              : { answerCheck: { kind: 'graded' as const, score: 1 } }),
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'graded-sample',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+      const questionUrl = `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`;
+
+      const graded = await fetch(questionUrl, {
+        body: new URLSearchParams({
+          __action: 'grade',
+          __csrf_token: 'ignored-token',
+          __variant_id: '9',
+          ans: '42',
+        }),
+        method: 'POST',
+      });
+      const gradedHtml = await graded.text();
+      assert.equal(graded.status, 200);
+      assert.match(gradedHtml, /Assessment question body/);
+      assert.deepEqual(submittedAnswers, [{ ans: '42' }]);
+
+      const state = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`,
+      );
+      const stateBody = (await state.json()) as { questions: Record<string, unknown>[] };
+      expect(stateBody).toMatchObject({
+        assessmentPreviewRunId,
+        invalidated: false,
+        questions: [
+          {
+            autoPoints: 2,
+            numberAttempts: 1,
+            status: 'complete',
+          },
+        ],
+        revision: 2,
+        score: { incomplete: false, points: 2, scorePercent: 100 },
+        status: 'in_progress',
+      });
+      expect(stateBody.questions[0]).not.toHaveProperty('savedAnswer');
+
+      const closedVariant = await fetch(questionUrl, {
+        body: new URLSearchParams({ __action: 'grade', ans: 'again' }),
+        method: 'POST',
+      });
+      assert.equal(closedVariant.status, 409);
+      expect(await closedVariant.json()).toMatchObject({
+        error: { code: 'assessment_preview_question_not_editable' },
+      });
+      assert.deepEqual(submittedAnswers, [{ ans: '42' }]);
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('requires the simulated honor code and access password before starting', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir, {
+      accessControl: [
+        {
+          dateControl: {
+            due: { date: '2027-01-01T00:00:00' },
+            password: 'preview-secret',
+            release: { date: '2026-01-01T00:00:00' },
+          },
+        },
+      ],
+      honorCode: 'I will complete this assessment honestly.',
+      requireHonorCode: true,
+      type: 'Exam',
+    });
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async () => testSuccessDocument('<p>Assessment question body</p>'),
+      }),
+    });
+
+    try {
+      const created = await fetch(`${startupSessionUrl(started)}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          facts: { now: '2026-08-29T12:00:00.000Z' },
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'protected-sample',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { href } = (await created.json()) as { href: string };
+
+      const missingHonorCode = await startAssessmentPreviewRun(started, href, {
+        password: 'preview-secret',
+      });
+      assert.equal(missingHonorCode.status, 403);
+      expect(await missingHonorCode.json()).toMatchObject({
+        error: { code: 'honor_code_required' },
+      });
+
+      const incorrectPassword = await startAssessmentPreviewRun(started, href, {
+        honorCodeAccepted: true,
+        password: 'incorrect',
+      });
+      assert.equal(incorrectPassword.status, 403);
+      expect(await incorrectPassword.json()).toMatchObject({
+        error: { code: 'invalid_assessment_password' },
+      });
+
+      const startedRun = await startAssessmentPreviewRun(started, href, {
+        honorCodeAccepted: true,
+        password: 'preview-secret',
+      });
+      assert.equal(startedRun.status, 200);
+      expect(await startedRun.json()).toMatchObject({ revision: 1, status: 'in_progress' });
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('defers answer checking until finish when real-time grading is disabled', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir, {
+      allowRealTimeGrading: false,
+      requireHonorCode: false,
+      type: 'Exam',
+    });
+    const renderSubmissions: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          renderSubmissions.push(input.submission?.rawSubmittedAnswer ?? null);
+          return {
+            ...testSuccessDocument('<p>Deferred assessment question body</p>'),
+            ...(input.submission == null
+              ? {}
+              : { answerCheck: { kind: 'graded' as const, score: 1 } }),
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'deferred-sample',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+
+      const saved = await fetch(
+        `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
+        {
+          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          method: 'POST',
+        },
+      );
+      assert.equal(saved.status, 200);
+      assert.deepEqual(renderSubmissions, [null]);
+
+      const finished = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({ action: 'finish', revision: 2 }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(finished.status, 200);
+      expect(await finished.json()).toMatchObject({
+        access: {
+          complete: true,
+          submittable: false,
+          visibility: { showQuestions: true, showScore: true },
+          visibilitySource: 'afterComplete',
+        },
+        questions: [{ autoPoints: 2, status: 'complete' }],
+        revision: 4,
+        score: { points: 2, scorePercent: 100 },
+        status: 'finished',
+      });
+      assert.deepEqual(renderSubmissions, [null, { ans: '42' }]);
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps deferred finish grading atomic when the question runtime fails', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir, {
+      allowRealTimeGrading: false,
+      requireHonorCode: false,
+      type: 'Exam',
+    });
+    let failFinishGrading = true;
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          if (input.submission == null) {
+            return testSuccessDocument('<p>Deferred assessment question body</p>');
+          }
+          if (failFinishGrading) return testFailureDocument();
+          return {
+            ...testSuccessDocument('<p>Deferred assessment question body</p>'),
+            answerCheck: { kind: 'graded' as const, score: 1 },
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'atomic-finish-sample',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+      const saved = await fetch(
+        `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
+        {
+          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          method: 'POST',
+        },
+      );
+      assert.equal(saved.status, 200);
+
+      const finish = (revision: number) =>
+        fetch(`${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`, {
+          body: JSON.stringify({ action: 'finish', revision }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        });
+      const failedFinish = await finish(2);
+      assert.equal(failedFinish.status, 422);
+      assert.match(await failedFinish.text(), /deferred grading failed/i);
+      expect(
+        await (
+          await fetch(`${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`)
+        ).json(),
+      ).toMatchObject({
+        questions: [{ autoPoints: 0, numberAttempts: 0 }],
+        revision: 2,
+        status: 'in_progress',
+      });
+
+      failFinishGrading = false;
+      const finished = await finish(2);
+      assert.equal(finished.status, 200);
+      expect(await finished.json()).toMatchObject({
+        questions: [{ autoPoints: 2, numberAttempts: 1 }],
+        revision: 4,
+        status: 'finished',
+      });
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('serves assessment assets and invalidates the active run explicitly', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir);
+    await writeCourseFile(courseDir, 'clientFilesCourse/course.txt', 'course asset');
+    await writeCourseFile(
+      courseDir,
+      'courseInstances/2026/fall/clientFilesCourseInstance/instance.txt',
+      'instance asset',
+    );
+    await writeCourseFile(
+      courseDir,
+      'courseInstances/2026/fall/assessments/module one/homework 1/clientFilesAssessment/assessment.txt',
+      'assessment asset',
+    );
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async () => testSuccessDocument('<p>Assessment question body</p>'),
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const requestBody = {
+        locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+        reuse: true,
+        seed: 'asset-sample',
+      };
+      const create = () =>
+        fetch(`${sessionUrl}/assessment-preview-runs`, {
+          body: JSON.stringify(requestBody),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        });
+      const created = await create();
+      const createdBody = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+
+      for (const [assetPath, contents] of [
+        ['clientFilesCourse/course.txt', 'course asset'],
+        ['clientFilesCourseInstance/instance.txt', 'instance asset'],
+        ['clientFilesAssessment/assessment.txt', 'assessment asset'],
+      ]) {
+        const asset = await fetch(`${serverUrl(started)}${createdBody.href}${assetPath}`);
+        assert.equal(asset.status, 200);
+        assert.equal(await asset.text(), contents);
+      }
+      assert.equal(
+        (
+          await fetch(
+            `${serverUrl(started)}${createdBody.href}clientFilesAssessment/%2e%2e/infoAssessment.json`,
+          )
+        ).status,
+        404,
+      );
+
+      await writeCourseFile(courseDir, 'clientFilesCourse/course.txt', 'edited course asset');
+      const invalidated = await fetch(`${sessionUrl}/source-changed`, {
+        method: 'POST',
+      });
+      assert.equal(invalidated.status, 204);
+      const staleOverview = await fetch(`${serverUrl(started)}${createdBody.href}`);
+      assert.equal(staleOverview.status, 409);
+      assert.match(await staleOverview.text(), /preview run is out of date/i);
+      const staleAsset = await fetch(
+        `${serverUrl(started)}${createdBody.href}clientFilesCourse/course.txt`,
+      );
+      assert.ok(staleAsset.status === 409 || staleAsset.status === 404);
+
+      const replaced = await create();
+      assert.equal(replaced.status, 201);
+      const replacedBody = (await replaced.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.notEqual(replacedBody.assessmentPreviewRunId, createdBody.assessmentPreviewRunId);
+      const replacementAsset = await fetch(
+        `${serverUrl(started)}${replacedBody.href}clientFilesCourse/course.txt`,
+      );
+      assert.equal(replacementAsset.status, 200);
+      assert.equal(await replacementAsset.text(), 'edited course asset');
+      assert.equal(
+        (
+          await fetch(
+            `${sessionUrl}/assessment-preview-runs/${createdBody.assessmentPreviewRunId}?format=json`,
+          )
+        ).status,
+        404,
+      );
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('discards an answer check when the source changes during grading', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir);
+    let beginGrading: () => void = () => {};
+    const gradingStarted = new Promise<void>((resolve) => {
+      beginGrading = resolve;
+    });
+    let finishGrading: () => void = () => {};
+    const mayFinishGrading = new Promise<void>((resolve) => {
+      finishGrading = resolve;
+    });
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          if (input.submission != null) {
+            beginGrading();
+            await mayFinishGrading;
+            return {
+              ...testSuccessDocument('<p>Stale assessment grade</p>'),
+              answerCheck: { kind: 'graded' as const, score: 1 },
+            };
+          }
+          return testSuccessDocument('<p>Assessment question body</p>');
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'invalidated-grade',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+
+      const grading = fetch(`${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`, {
+        body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+        method: 'POST',
+      });
+      await gradingStarted;
+      assert.equal(
+        (
+          await fetch(`${sessionUrl}/source-changed`, {
+            method: 'POST',
+          })
+        ).status,
+        204,
+      );
+      finishGrading();
+
+      assert.equal((await grading).status, 409);
+      const state = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`,
+      );
+      expect(await state.json()).toMatchObject({
+        invalidated: true,
+        questions: [{ autoPoints: 0, numberAttempts: 0 }],
+        revision: 1,
+      });
+    } finally {
+      finishGrading();
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps assessment navigation read-only on a question-only server', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir);
+    const renderCalls: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'question-only'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          renderCalls.push({ renderMode: input.renderMode, submission: input.submission });
+          return testSuccessDocument('<p>Read-only assessment question</p>');
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'question-only-assessment',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+      const questionUrl = `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`;
+
+      const question = await fetch(questionUrl);
+      assert.equal(question.status, 200);
+      assert.match(await question.text(), /Read-only assessment question/);
+      assert.deepEqual(renderCalls, [{ renderMode: 'question-only', submission: undefined }]);
+
+      const answerCheck = await fetch(questionUrl, {
+        body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+        method: 'POST',
+      });
+      assert.equal(answerCheck.status, 405);
+      assert.equal(answerCheck.headers.get('allow'), 'GET, HEAD');
+      assert.equal(await answerCheck.text(), '');
+      assert.deepEqual(renderCalls, [{ renderMode: 'question-only', submission: undefined }]);
+
+      const finish = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({ action: 'finish', revision: 1 }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(finish.status, 405);
+      assert.equal(await finish.text(), '');
+      assert.deepEqual(renderCalls, [{ renderMode: 'question-only', submission: undefined }]);
+      expect(
+        await (
+          await fetch(`${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`)
+        ).json(),
+      ).toMatchObject({ revision: 1, status: 'in_progress' });
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects answer posts when simulated access hides assessment questions', async () => {
+    const courseDir = await makeTempCourse();
+    const examUuid = '11111111-1111-4111-8111-111111111198';
+    await writeAssessmentPreviewFixture(courseDir, {
+      accessControl: [
+        {
+          integrations: {
+            prairieTest: {
+              exams: [
+                {
+                  afterComplete: {
+                    questions: { hidden: true },
+                    score: { hidden: true },
+                  },
+                  examUuid,
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    const renderCalls: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          renderCalls.push(input);
+          return {
+            ...testSuccessDocument('<p>Hidden transient grade</p>'),
+            answerCheck: { kind: 'graded' as const, score: 1 },
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          facts: {
+            mode: 'Exam',
+            now: '2026-08-29T13:00:00.000Z',
+            prairieTestReservations: [{ accessEnd: '2026-08-29T14:00:00.000Z', examUuid }],
+          },
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'questions-hidden',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+
+      const questionUrl = `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`;
+      const hiddenQuestion = await fetch(questionUrl, { redirect: 'manual' });
+      assert.equal(hiddenQuestion.status, 303);
+      assert.deepEqual(renderCalls, []);
+
+      const answer = await fetch(questionUrl, {
+        body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+        method: 'POST',
+      });
+
+      assert.equal(answer.status, 403);
+      expect(await answer.json()).toMatchObject({
+        error: { code: 'assessment_questions_hidden' },
+      });
+      assert.deepEqual(renderCalls, []);
+      const hiddenState = (await (
+        await fetch(`${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`)
+      ).json()) as Record<string, unknown>;
+      expect(hiddenState).toMatchObject({
+        access: {
+          authorized: true,
+          submittable: true,
+          visibility: { showQuestions: false, showScore: false },
+        },
+        revision: 1,
+      });
+      expect(hiddenState).not.toHaveProperty('questions');
+      expect(hiddenState).not.toHaveProperty('score');
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects answer posts for finished and lockpoint-read-only questions before rendering', async () => {
+    const courseDir = await makeTempCourse();
+    await writeQuestionInfo(courseDir, 'unit/second-question', {
+      gradingMethod: 'Internal',
+      title: 'Second question',
+      topic: 'Testing',
+      type: 'v3',
+      uuid: '11111111-1111-4111-8111-111111111197',
+    });
+    await writeAssessmentPreviewFixture(courseDir, {
+      zones: [
+        { questions: [{ id: 'unit/question', points: 2 }] },
+        {
+          lockpoint: true,
+          questions: [{ id: 'unit/second-question', points: 1 }],
+        },
+      ],
+    });
+    const renderCalls: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          renderCalls.push(input);
+          return {
+            ...testSuccessDocument('<p>Unexpected transient grade</p>'),
+            answerCheck: { kind: 'graded' as const, score: 1 },
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const create = async (seed: string) => {
+        const response = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+          body: JSON.stringify({
+            locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+            reuse: true,
+            seed,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        });
+        return (await response.json()) as {
+          assessmentPreviewRunId: string;
+          href: string;
+        };
+      };
+
+      const lockpointRun = await create('lockpoint-read-only');
+      assert.equal((await startAssessmentPreviewRun(started, lockpointRun.href)).status, 200);
+      const crossed = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${lockpointRun.assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({ action: 'cross-lockpoint', revision: 1, zoneId: 'zone-2' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(crossed.status, 200);
+      const readOnlyAnswer = await fetch(
+        `${serverUrl(started)}${lockpointRun.href}questions/zone-1-pool-1-alternative-1`,
+        {
+          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          method: 'POST',
+        },
+      );
+      assert.equal(readOnlyAnswer.status, 409);
+      expect(await readOnlyAnswer.json()).toMatchObject({
+        error: { code: 'assessment_preview_question_not_editable' },
+      });
+
+      const finishedRun = await create('finished-read-only');
+      assert.equal((await startAssessmentPreviewRun(started, finishedRun.href)).status, 200);
+      const finished = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${finishedRun.assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({ action: 'finish', revision: 1 }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(finished.status, 200);
+      const finishedAnswer = await fetch(
+        `${serverUrl(started)}${finishedRun.href}questions/zone-1-pool-1-alternative-1`,
+        {
+          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          method: 'POST',
+        },
+      );
+      assert.equal(finishedAnswer.status, 409);
+      expect(await finishedAnswer.json()).toMatchObject({
+        error: { code: 'assessment_preview_question_not_editable' },
+      });
+      assert.deepEqual(renderCalls, []);
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('rejects answer and mutation posts after simulated access becomes non-submittable', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir, {
+      accessControl: [
+        {
+          dateControl: {
+            afterLastDeadline: { allowSubmissions: false },
+            due: { date: '2026-08-30T00:00:00' },
+            release: { date: '2026-08-01T00:00:00' },
+          },
+        },
+      ],
+    });
+    const renderCalls: unknown[] = [];
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          renderCalls.push(input);
+          return {
+            ...testSuccessDocument('<p>Unexpected transient grade</p>'),
+            answerCheck: { kind: 'graded' as const, score: 1 },
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          facts: { now: '2026-08-29T12:00:00.000Z' },
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'non-submittable',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+      const advanced = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({
+            action: 'advance-time',
+            now: '2026-09-01T12:00:00.000Z',
+            revision: 1,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(advanced.status, 200);
+      expect(await advanced.json()).toMatchObject({ access: { submittable: false } });
+
+      const answer = await fetch(
+        `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
+        {
+          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          method: 'POST',
+        },
+      );
+      assert.equal(answer.status, 403);
+      expect(await answer.json()).toMatchObject({
+        error: { code: 'assessment_not_submittable' },
+      });
+      const newVariant = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({
+            action: 'new-variant',
+            revision: 2,
+            slotId: 'zone-1-pool-1-alternative-1',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(newVariant.status, 403);
+      expect(await newVariant.json()).toMatchObject({
+        error: { code: 'assessment_not_submittable' },
+      });
+      const crossLockpoint = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({
+            action: 'cross-lockpoint',
+            revision: 2,
+            zoneId: 'zone-2',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(crossLockpoint.status, 403);
+      expect(await crossLockpoint.json()).toMatchObject({
+        error: { code: 'assessment_not_submittable' },
+      });
+      const readOnlyState = (await (
+        await fetch(`${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`)
+      ).json()) as Record<string, unknown>;
+      expect(readOnlyState).toMatchObject({
+        access: { visibility: { showQuestions: false, showScore: true } },
+        revision: 2,
+        score: { points: 0, scorePercent: 0 },
+      });
+      expect(readOnlyState).not.toHaveProperty('questions');
+      const finish = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({ action: 'finish', revision: 2 }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(finish.status, 200);
+      expect(await finish.json()).toMatchObject({ status: 'finished' });
+      assert.deepEqual(renderCalls, []);
     } finally {
       await started.close();
       await fs.rm(courseDir, { force: true, recursive: true });

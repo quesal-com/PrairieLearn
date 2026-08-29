@@ -3,17 +3,23 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  type AssessmentJson,
+  AssessmentJsonSchema,
+  type CourseInstanceJson,
+  CourseInstanceJsonSchema,
   type CourseJson,
   CourseJsonSchema,
   type QuestionJson,
   QuestionJsonSchema,
 } from '../../schemas/index.js';
+import type { AssessmentPreviewLocator } from '../assessment-preview/locator.js';
 import { resolveLegacyQuestionFilePath } from '../legacy-question-file.js';
 
 import { ExpectedQuestionPreviewError } from './expected-error.js';
 import { type QuestionPreviewQid, parseQuestionPreviewQid } from './qid.js';
 
 interface LocalPreviewCourseMetadata {
+  assessmentSets?: CourseJson['assessmentSets'];
   name: string;
   options: CourseJson['options'];
   timezone: string;
@@ -21,7 +27,17 @@ interface LocalPreviewCourseMetadata {
 }
 
 export type LocalPreviewCourseResource =
+  | {
+      filePathSegments: string[];
+      kind: 'assessment-client-file';
+      locator: AssessmentPreviewLocator;
+    }
   | { filePathSegments: string[]; kind: 'course-client-file' }
+  | {
+      filePathSegments: string[];
+      kind: 'course-instance-client-file';
+      locator: AssessmentPreviewLocator;
+    }
   | { filePathSegments: string[]; kind: 'element-extension-file' }
   | { filePathSegments: string[]; kind: 'element-file' }
   | { filePathSegments: string[]; kind: 'question-client-file'; qid: QuestionPreviewQid };
@@ -40,6 +56,12 @@ export interface LocalPreviewCourseSource {
   sanitizeDiagnosticValue(value: unknown): unknown;
 }
 
+export interface LocalPreviewAssessmentCourseSource extends LocalPreviewCourseSource {
+  readAssessmentInfo(locator: AssessmentPreviewLocator): Promise<AssessmentJson>;
+  readCourseInfo(): Promise<CourseJson>;
+  readCourseInstanceInfo(locator: AssessmentPreviewLocator): Promise<CourseInstanceJson>;
+}
+
 export class InvalidLocalPreviewCourseError extends Error {
   override name = 'InvalidLocalPreviewCourseError';
 }
@@ -51,7 +73,10 @@ export class QuestionPreviewQuestionNotFoundError extends ExpectedQuestionPrevie
 function isPathInsideRoot(root: string, candidate: string) {
   const relativePath = path.relative(root, candidate);
   return (
-    relativePath.length === 0 || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
+    relativePath.length === 0 ||
+    (relativePath !== '..' &&
+      !relativePath.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relativePath))
   );
 }
 
@@ -70,8 +95,18 @@ function hasUnsafePathSegment(pathSegments: string[]) {
 
 function resourceRootPathSegments(resource: LocalPreviewCourseResource): string[] {
   switch (resource.kind) {
+    case 'assessment-client-file':
+      return [
+        'courseInstances',
+        ...resource.locator.ciidPathSegments,
+        'assessments',
+        ...resource.locator.aidPathSegments,
+        'clientFilesAssessment',
+      ];
     case 'course-client-file':
       return ['clientFilesCourse'];
+    case 'course-instance-client-file':
+      return ['courseInstances', ...resource.locator.ciidPathSegments, 'clientFilesCourseInstance'];
     case 'element-file':
       return ['elements'];
     case 'element-extension-file':
@@ -96,7 +131,7 @@ function sanitizeDiagnosticValue(value: unknown, courseDir: string): unknown {
 
 export async function createLocalPreviewCourseSource(
   courseDirInput: string,
-): Promise<LocalPreviewCourseSource> {
+): Promise<LocalPreviewAssessmentCourseSource> {
   if (!path.isAbsolute(courseDirInput)) {
     throw new InvalidLocalPreviewCourseError(
       'Invalid Local Preview Course Source: course directory must be absolute.',
@@ -114,41 +149,44 @@ export async function createLocalPreviewCourseSource(
     );
   }
 
-  let infoCoursePath: string;
-  let infoCourseContents: string;
-  try {
-    infoCoursePath = await fs.realpath(path.join(courseDir, 'infoCourse.json'));
-    if (!isPathInsideRoot(courseDir, infoCoursePath)) {
+  async function readCourseInfoFile(): Promise<CourseJson> {
+    let infoCoursePath: string;
+    let infoCourseContents: string;
+    try {
+      infoCoursePath = await fs.realpath(path.join(courseDir, 'infoCourse.json'));
+      if (!isPathInsideRoot(courseDir, infoCoursePath)) {
+        throw new InvalidLocalPreviewCourseError(
+          'Invalid Local Preview Course Source: infoCourse.json escapes the canonical course root.',
+        );
+      }
+      infoCourseContents = await fs.readFile(infoCoursePath, 'utf8');
+    } catch (err) {
+      if (err instanceof InvalidLocalPreviewCourseError) throw err;
       throw new InvalidLocalPreviewCourseError(
-        'Invalid Local Preview Course Source: infoCourse.json escapes the canonical course root.',
+        'Invalid Local Preview Course Source: infoCourse.json is not readable.',
+        { cause: err },
       );
     }
-    infoCourseContents = await fs.readFile(infoCoursePath, 'utf8');
-  } catch (err) {
-    if (err instanceof InvalidLocalPreviewCourseError) throw err;
-    throw new InvalidLocalPreviewCourseError(
-      'Invalid Local Preview Course Source: infoCourse.json is not readable.',
-      { cause: err },
-    );
-  }
 
-  let rawInfoCourse: unknown;
-  try {
-    rawInfoCourse = JSON.parse(infoCourseContents);
-  } catch (err) {
-    throw new InvalidLocalPreviewCourseError(
-      'Invalid Local Preview Course Source: invalid infoCourse.json JSON.',
-      { cause: err },
-    );
+    let rawInfoCourse: unknown;
+    try {
+      rawInfoCourse = JSON.parse(infoCourseContents);
+    } catch (err) {
+      throw new InvalidLocalPreviewCourseError(
+        'Invalid Local Preview Course Source: invalid infoCourse.json JSON.',
+        { cause: err },
+      );
+    }
+    const parsedInfoCourse = CourseJsonSchema.safeParse(rawInfoCourse);
+    if (!parsedInfoCourse.success) {
+      throw new InvalidLocalPreviewCourseError(
+        'Invalid Local Preview Course Source: invalid infoCourse.json metadata.',
+        { cause: parsedInfoCourse.error },
+      );
+    }
+    return parsedInfoCourse.data;
   }
-  const parsedInfoCourse = CourseJsonSchema.safeParse(rawInfoCourse);
-  if (!parsedInfoCourse.success) {
-    throw new InvalidLocalPreviewCourseError(
-      'Invalid Local Preview Course Source: invalid infoCourse.json metadata.',
-      { cause: parsedInfoCourse.error },
-    );
-  }
-  const infoCourse = parsedInfoCourse.data;
+  const infoCourse = await readCourseInfoFile();
 
   let questionsDir: string;
   try {
@@ -167,13 +205,193 @@ export async function createLocalPreviewCourseSource(
     );
   }
 
-  const source: LocalPreviewCourseSource = {
+  async function resolveCourseInstanceDirectory(locator: AssessmentPreviewLocator) {
+    let courseInstancesDir: string;
+    try {
+      courseInstancesDir = await fs.realpath(path.join(courseDir, 'courseInstances'));
+      if (!(await fs.stat(courseInstancesDir)).isDirectory()) throw new Error('not a directory');
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        throw new ExpectedQuestionPreviewError(
+          `Course instance "${locator.ciid}" does not exist.`,
+          { data: { ciid: locator.ciid }, phase: 'metadata' },
+        );
+      }
+      throw err;
+    }
+    if (!isPathInsideRoot(courseDir, courseInstancesDir)) {
+      throw new ExpectedQuestionPreviewError(
+        `Course instance "${locator.ciid}" escapes the canonical course root.`,
+        { data: { ciid: locator.ciid }, phase: 'metadata' },
+      );
+    }
+
+    let courseInstanceDir: string;
+    try {
+      courseInstanceDir = await fs.realpath(
+        path.join(courseInstancesDir, ...locator.ciidPathSegments),
+      );
+      if (!(await fs.stat(courseInstanceDir)).isDirectory()) throw new Error('not a directory');
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        throw new ExpectedQuestionPreviewError(
+          `Course instance "${locator.ciid}" does not exist.`,
+          { data: { ciid: locator.ciid }, phase: 'metadata' },
+        );
+      }
+      throw err;
+    }
+    if (!isPathInsideRoot(courseInstancesDir, courseInstanceDir)) {
+      throw new ExpectedQuestionPreviewError(
+        `Course instance "${locator.ciid}" escapes the canonical courseInstances namespace.`,
+        { data: { ciid: locator.ciid }, phase: 'metadata' },
+      );
+    }
+
+    return courseInstanceDir;
+  }
+
+  async function resolveAssessmentDirectories(locator: AssessmentPreviewLocator) {
+    const courseInstanceDir = await resolveCourseInstanceDirectory(locator);
+
+    let assessmentsDir: string;
+    try {
+      assessmentsDir = await fs.realpath(path.join(courseInstanceDir, 'assessments'));
+      if (!(await fs.stat(assessmentsDir)).isDirectory()) throw new Error('not a directory');
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        throw new ExpectedQuestionPreviewError(
+          `Assessment "${locator.ciid}/${locator.aid}" does not exist.`,
+          { data: { aid: locator.aid, ciid: locator.ciid }, phase: 'metadata' },
+        );
+      }
+      throw err;
+    }
+    if (!isPathInsideRoot(courseInstanceDir, assessmentsDir)) {
+      throw new ExpectedQuestionPreviewError(
+        `Assessment "${locator.ciid}/${locator.aid}" escapes the canonical course root.`,
+        { data: { aid: locator.aid, ciid: locator.ciid }, phase: 'metadata' },
+      );
+    }
+
+    let assessmentDir: string;
+    try {
+      assessmentDir = await fs.realpath(path.join(assessmentsDir, ...locator.aidPathSegments));
+      if (!(await fs.stat(assessmentDir)).isDirectory()) throw new Error('not a directory');
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        throw new ExpectedQuestionPreviewError(
+          `Assessment "${locator.ciid}/${locator.aid}" does not exist.`,
+          { data: { aid: locator.aid, ciid: locator.ciid }, phase: 'metadata' },
+        );
+      }
+      throw err;
+    }
+    if (!isPathInsideRoot(assessmentsDir, assessmentDir)) {
+      const message = isPathInsideRoot(courseInstanceDir, assessmentDir)
+        ? `Assessment "${locator.ciid}/${locator.aid}" escapes the canonical assessments namespace.`
+        : `Assessment "${locator.ciid}/${locator.aid}" escapes the canonical course root.`;
+      throw new ExpectedQuestionPreviewError(message, {
+        data: { aid: locator.aid, ciid: locator.ciid },
+        phase: 'metadata',
+      });
+    }
+
+    return { assessmentDir, courseInstanceDir };
+  }
+
+  async function readMetadataFile(input: {
+    directory: string;
+    filename: string;
+    label: string;
+    locator: AssessmentPreviewLocator;
+  }): Promise<unknown> {
+    let infoPath: string;
+    try {
+      infoPath = await fs.realpath(path.join(input.directory, input.filename));
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        throw new ExpectedQuestionPreviewError(`${input.label} is missing ${input.filename}.`, {
+          data: { aid: input.locator.aid, ciid: input.locator.ciid },
+          phase: 'metadata',
+        });
+      }
+      throw err;
+    }
+    if (!isPathInsideRoot(input.directory, infoPath)) {
+      throw new ExpectedQuestionPreviewError(`${input.label} escapes the canonical course root.`, {
+        data: { aid: input.locator.aid, ciid: input.locator.ciid },
+        phase: 'metadata',
+      });
+    }
+
+    try {
+      return JSON.parse(await fs.readFile(infoPath, 'utf8'));
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        throw new ExpectedQuestionPreviewError(
+          `${input.label} has invalid ${input.filename} JSON.`,
+          {
+            data: { aid: input.locator.aid, ciid: input.locator.ciid },
+            phase: 'metadata',
+          },
+        );
+      }
+      throw err;
+    }
+  }
+
+  const source: LocalPreviewAssessmentCourseSource = {
     courseDir,
     courseMetadata: {
+      ...(infoCourse.assessmentSets == null ? {} : { assessmentSets: infoCourse.assessmentSets }),
       name: infoCourse.name,
       options: infoCourse.options,
       timezone: infoCourse.timezone ?? 'UTC',
       title: infoCourse.title,
+    },
+    async readAssessmentInfo(locator) {
+      const { assessmentDir } = await resolveAssessmentDirectories(locator);
+      const label = `Assessment "${locator.ciid}/${locator.aid}"`;
+      const rawInfo = await readMetadataFile({
+        directory: assessmentDir,
+        filename: 'infoAssessment.json',
+        label,
+        locator,
+      });
+      const parsedInfo = AssessmentJsonSchema.safeParse(rawInfo);
+      if (!parsedInfo.success) {
+        throw new ExpectedQuestionPreviewError(
+          `${label} has invalid infoAssessment.json metadata.`,
+          {
+            data: { issues: parsedInfo.error.issues, aid: locator.aid, ciid: locator.ciid },
+            phase: 'metadata',
+          },
+        );
+      }
+      return parsedInfo.data;
+    },
+    readCourseInfo: readCourseInfoFile,
+    async readCourseInstanceInfo(locator) {
+      const { courseInstanceDir } = await resolveAssessmentDirectories(locator);
+      const label = `Course instance "${locator.ciid}"`;
+      const rawInfo = await readMetadataFile({
+        directory: courseInstanceDir,
+        filename: 'infoCourseInstance.json',
+        label,
+        locator,
+      });
+      const parsedInfo = CourseInstanceJsonSchema.safeParse(rawInfo);
+      if (!parsedInfo.success) {
+        throw new ExpectedQuestionPreviewError(
+          `${label} has invalid infoCourseInstance.json metadata.`,
+          {
+            data: { issues: parsedInfo.error.issues, ciid: locator.ciid },
+            phase: 'metadata',
+          },
+        );
+      }
+      return parsedInfo.data;
     },
     async readQuestionInfo(qid) {
       let questionDir: string;
@@ -284,12 +502,22 @@ export async function createLocalPreviewCourseSource(
       }
 
       try {
-        const rootDir = await fs.realpath(path.join(courseDir, ...rootPathSegments));
-        if (!isPathInsideRoot(courseDir, rootDir)) return null;
+        let owningDir = courseDir;
+        let rootPath = path.join(courseDir, ...rootPathSegments);
+        if (resource.kind === 'course-instance-client-file') {
+          owningDir = await resolveCourseInstanceDirectory(resource.locator);
+          rootPath = path.join(owningDir, 'clientFilesCourseInstance');
+        } else if (resource.kind === 'assessment-client-file') {
+          owningDir = (await resolveAssessmentDirectories(resource.locator)).assessmentDir;
+          rootPath = path.join(owningDir, 'clientFilesAssessment');
+        }
+        const rootDir = await fs.realpath(rootPath);
+        if (!isPathInsideRoot(owningDir, rootDir)) return null;
         const filePath = await fs.realpath(path.join(rootDir, ...filePathSegments));
         if (!isPathInsideRoot(rootDir, filePath)) return null;
         return (await fs.stat(filePath)).isFile() ? filePath : null;
       } catch (err) {
+        if (err instanceof ExpectedQuestionPreviewError) return null;
         if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return null;
         throw err;
       }

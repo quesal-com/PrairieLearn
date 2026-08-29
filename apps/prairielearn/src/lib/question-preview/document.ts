@@ -42,6 +42,8 @@ interface QuestionPreviewSubmissionInput {
 }
 
 export interface QuestionPreviewDocumentInput {
+  /** Effective question preferences resolved by the trusted caller. */
+  preferences?: Record<string, string | number | boolean>;
   qid: QuestionPreviewQid;
   variantSeed?: string;
   submission?: QuestionPreviewSubmissionInput;
@@ -73,7 +75,13 @@ export interface QuestionPreviewDiagnostic {
   stack?: string;
 }
 
+export type QuestionPreviewAnswerCheckOutcome =
+  | { kind: 'graded'; score: number }
+  | { kind: 'invalid' }
+  | { gradingMethod: Question['grading_method']; kind: 'unsupported' };
+
 interface QuestionPreviewDocumentSuccess {
+  answerCheck?: QuestionPreviewAnswerCheckOutcome;
   diagnostics: QuestionPreviewDiagnostic[];
   documentHtml: string;
   ok: true;
@@ -422,15 +430,18 @@ export const QUESTION_PREVIEW_ERROR_DOCUMENT = renderQuestionPreviewDocumentHtml
 });
 
 function makeQuestionPreviewSuccessResult({
+  answerCheck,
   bodyHtml,
   diagnostics,
   headHtml,
 }: {
+  answerCheck?: QuestionPreviewAnswerCheckOutcome;
   bodyHtml: string;
   diagnostics: QuestionPreviewDiagnostic[];
   headHtml: string;
 }): QuestionPreviewDocumentSuccess {
   return {
+    ...(answerCheck == null ? {} : { answerCheck }),
     diagnostics,
     documentHtml: renderQuestionPreviewDocumentHtml({ bodyHtml, headHtml }),
     ok: true,
@@ -484,6 +495,7 @@ async function renderQuestionPreviewDocumentResult({
   localPreviewGeneratedFiles,
   localPreviewSubmissionFiles,
   localPreviewWorkspaces,
+  preferences = {},
   qid,
   renderMode,
   submission: submissionInput,
@@ -530,8 +542,6 @@ async function renderQuestionPreviewDocumentResult({
       question,
     });
     const questionServer = questionAdapter.questionServer;
-    const preferences: Record<string, string | number | boolean> = {};
-
     phase = 'generate';
     const generateResult = await questionServer.generate(
       question,
@@ -845,6 +855,13 @@ async function renderQuestionPreviewDocumentResult({
           });
 
     return makeQuestionPreviewSuccessResult({
+      answerCheck: unsupportedGradingMethod
+        ? { gradingMethod: question.grading_method, kind: 'unsupported' }
+        : submission == null
+          ? undefined
+          : submission.gradable === true && submission.score != null
+            ? { kind: 'graded', score: submission.score }
+            : { kind: 'invalid' },
       bodyHtml,
       diagnostics: [
         ...generateDiagnostics,
@@ -883,6 +900,7 @@ export function createQuestionPreviewDocumentRenderer({
         localPreviewGeneratedFiles,
         localPreviewSubmissionFiles,
         localPreviewWorkspaces,
+        preferences: input.preferences,
         qid: input.qid,
         renderMode: input.renderMode ?? renderMode,
         submission: input.submission,
