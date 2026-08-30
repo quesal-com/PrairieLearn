@@ -74,7 +74,7 @@ describe('createAssessmentPreviewRun', () => {
 });
 
 describe('reduceAssessmentPreviewRun', () => {
-  it('starts a run and saves an opaque answer without mutating the prior states', () => {
+  it('starts a run and saves a valid opaque answer without consuming an attempt', () => {
     const assessment = AssessmentJsonSchema.parse({
       uuid: '53e198fd-a779-4a40-831f-fe1cc53d2716',
       type: 'Homework',
@@ -105,13 +105,69 @@ describe('reduceAssessmentPreviewRun', () => {
       type: 'save',
       slotId: 'zone-1-pool-1-alternative-1',
       answer: { value: 'x = 2' },
+      gradable: true,
     });
 
     expect(initial.status).toBe('not_started');
     expect(started).toMatchObject({ status: 'in_progress', startedAtMs: 10_000, revision: 1 });
     expect(started.questions[0].savedAnswer).toBeNull();
-    expect(saved.questions[0].savedAnswer).toEqual({ value: 'x = 2' });
+    expect(saved.questions[0]).toMatchObject({
+      status: 'saved',
+      savedAnswer: { value: 'x = 2' },
+      autoPoints: 0,
+      numberAttempts: 0,
+      lastGradableAtMs: null,
+      variant: { numTries: 0, open: true },
+    });
+    expect(saved.score).toEqual(started.score);
     expect(saved.revision).toBe(2);
+  });
+
+  it('marks an invalid saved answer without consuming an attempt', () => {
+    const assessment = AssessmentJsonSchema.parse({
+      uuid: '53e198fd-a779-4a40-831f-fe1cc53d2717',
+      type: 'Homework',
+      title: 'Invalid saved answer',
+      set: 'Homework',
+      number: '5',
+      zones: [{ questions: [{ id: 'q1', points: 1 }] }],
+    });
+    const { plan } = compileAssessmentPlan({
+      assessment,
+      course: { timezone: 'UTC', assessmentSetAbbreviation: 'HW' },
+      questions: {
+        q1: {
+          uuid: '02e43c86-d6ab-4ef3-9d78-ef5294df4447',
+          title: 'Question',
+          gradingMethod: 'Internal',
+          singleVariant: false,
+        },
+      },
+    });
+    const started = reduceAssessmentPreviewRun(
+      createAssessmentPreviewRun(plan, 'invalid-save-seed', {
+        nowMs: 10_000,
+        creditPercent: 100,
+      }),
+      { type: 'start' },
+    );
+
+    const invalid = reduceAssessmentPreviewRun(started, {
+      type: 'save',
+      slotId: 'zone-1-pool-1-alternative-1',
+      answer: { value: 'not parseable' },
+      gradable: false,
+    });
+
+    expect(invalid.questions[0]).toMatchObject({
+      status: 'invalid',
+      savedAnswer: { value: 'not parseable' },
+      autoPoints: 0,
+      numberAttempts: 0,
+      lastGradableAtMs: null,
+      variant: { numTries: 0, open: true },
+    });
+    expect(invalid.score).toEqual(started.score);
   });
 
   it('finishes the single attempt and makes every selected question read-only', () => {
@@ -194,8 +250,15 @@ describe('reduceAssessmentPreviewRun', () => {
       slotId: 'zone-1-pool-1-alternative-1',
       score: 0.5,
       gradable: true,
+      answer: { value: 'first attempt' },
     });
-    const rateLimited = reduceAssessmentPreviewRun(partial, {
+    const savedWhileLimited = reduceAssessmentPreviewRun(partial, {
+      type: 'save',
+      slotId: 'zone-1-pool-1-alternative-1',
+      answer: { value: 'pending answer' },
+      gradable: true,
+    });
+    const rateLimited = reduceAssessmentPreviewRun(savedWhileLimited, {
       type: 'grade',
       slotId: 'zone-1-pool-1-alternative-1',
       score: 1,
@@ -219,10 +282,19 @@ describe('reduceAssessmentPreviewRun', () => {
       currentValue: 2,
       highestSubmissionScore: 0.5,
       numberAttempts: 1,
+      savedAnswer: null,
       variant: { number: 1, numTries: 1, open: true },
     });
     expect(partial.score).toMatchObject({ points: 1, scorePercent: 25 });
-    expect(rateLimited.questions[0]).toEqual(partial.questions[0]);
+    expect(savedWhileLimited.questions[0]).toMatchObject({
+      status: 'saved',
+      savedAnswer: { value: 'pending answer' },
+      autoPoints: 1,
+      numberAttempts: 1,
+      lastGradableAtMs: 0,
+    });
+    expect(rateLimited.questions[0]).toEqual(savedWhileLimited.questions[0]);
+    expect(rateLimited.score).toEqual(partial.score);
     expect(rateLimited.diagnostics.at(-1)).toMatchObject({
       code: 'grade-rate-limited',
       slotId: 'zone-1-pool-1-alternative-1',
@@ -402,7 +474,7 @@ describe('reduceAssessmentPreviewRun', () => {
     expect(finishGraded.questions[0]).toMatchObject({ status: 'complete', autoPoints: 1 });
   });
 
-  it('marks an ungradable answer invalid without consuming an attempt', () => {
+  it('marks an ungradable answer invalid and clears it without consuming an attempt', () => {
     const assessment = AssessmentJsonSchema.parse({
       uuid: '8fbcd8f5-e71d-4a6c-94b0-a0c35522c0ca',
       type: 'Homework',
@@ -438,7 +510,7 @@ describe('reduceAssessmentPreviewRun', () => {
 
     expect(invalid.questions[0]).toMatchObject({
       status: 'invalid',
-      savedAnswer: { value: 'not parseable' },
+      savedAnswer: null,
       numberAttempts: 0,
       lastGradableAtMs: null,
       variant: { numTries: 0, open: true },

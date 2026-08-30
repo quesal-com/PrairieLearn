@@ -151,6 +151,41 @@ describe('compileAssessmentPlan', () => {
     });
   });
 
+  it('resolves question title visibility from assessment type defaults and explicit overrides', () => {
+    const compile = (type: 'Homework' | 'Exam', showQuestionTitles?: boolean) => {
+      const assessment = AssessmentJsonSchema.parse({
+        uuid: '11111111-1111-4111-8111-111111111298',
+        type,
+        title: `${type} title visibility`,
+        set: type,
+        number: '1',
+        ...(showQuestionTitles === undefined ? {} : { showQuestionTitles }),
+        zones: [],
+      });
+
+      return compileAssessmentPlan({
+        assessment,
+        course: {
+          timezone: 'UTC',
+          assessmentSetAbbreviation: type === 'Homework' ? 'HW' : 'E',
+        },
+        questions: {},
+      }).plan;
+    };
+
+    expect({
+      defaultHomework: compile('Homework').showQuestionTitles,
+      defaultExam: compile('Exam').showQuestionTitles,
+      explicitHomework: compile('Homework', false).showQuestionTitles,
+      explicitExam: compile('Exam', true).showQuestionTitles,
+    }).toEqual({
+      defaultHomework: true,
+      defaultExam: false,
+      explicitHomework: false,
+      explicitExam: true,
+    });
+  });
+
   it('keeps unsupported source in the plan and reports structured diagnostics', () => {
     const assessment = AssessmentJsonSchema.parse({
       uuid: 'aeaf3e40-5782-46dc-8dc7-ff0abe5df574',

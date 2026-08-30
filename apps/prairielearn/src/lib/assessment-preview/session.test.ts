@@ -10,7 +10,11 @@ import type { LocalPreviewAssessmentCourseSource } from '../question-preview/cou
 
 import type { AssessmentPreviewStudentFacts } from './access.js';
 import { parseAssessmentPreviewLocator } from './locator.js';
-import { AssessmentPreviewSession, InvalidAssessmentPreviewPlanError } from './session.js';
+import {
+  AssessmentPreviewSession,
+  InvalidAssessmentPreviewPlanError,
+  sanitizeAssessmentPreviewDiagnostics,
+} from './session.js';
 
 const assessment = AssessmentJsonSchema.parse({
   number: '1',
@@ -108,6 +112,39 @@ function makeCourseSource({
 }
 
 describe('AssessmentPreviewSession', () => {
+  it('sanitizes structured diagnostic data and routing context', () => {
+    const source = makeCourseSource({
+      sanitizeDiagnosticValue: (value) =>
+        JSON.parse(JSON.stringify(value).replaceAll('/local/course', '<course>')),
+    });
+
+    expect(
+      sanitizeAssessmentPreviewDiagnostics(source, [
+        {
+          code: 'question-preview-render',
+          data: {
+            files: ['/local/course/questions/local/question/server.py'],
+          },
+          message: 'Render failed in /local/course/questions/local/question/server.py.',
+          path: 'questions/local/question at /local/course',
+          severity: 'error' as const,
+          slotId: 'slot from /local/course',
+        },
+      ]),
+    ).toEqual([
+      {
+        code: 'question-preview-render',
+        data: {
+          files: ['<course>/questions/local/question/server.py'],
+        },
+        message: 'Render failed in <course>/questions/local/question/server.py.',
+        path: 'questions/local/question at <course>',
+        severity: 'error',
+        slotId: 'slot from <course>',
+      },
+    ]);
+  });
+
   it('owns one opaque, retrievable run and replaces it with a different sample', async () => {
     const session = new AssessmentPreviewSession(makeCourseSource());
 
@@ -237,6 +274,7 @@ describe('AssessmentPreviewSession', () => {
     expect(
       session.dispatch(created.record.assessmentPreviewRunId, {
         answer: { value: 'stale' },
+        gradable: true,
         slotId: created.record.run.questions[0].slotId,
         type: 'save',
       }),

@@ -36,10 +36,23 @@ import {
 import { type LocalPreviewSubmissionFiles, type PreviewSubmittedFile } from './submission-files.js';
 import type { PreviewWorkspaceAllocator } from './workspace-launcher.js';
 
-interface QuestionPreviewSubmissionInput {
-  /** Posted form fields with `__action`/`__csrf_token`/`__variant_id` already stripped. */
+export interface QuestionPreviewSubmissionSnapshot {
+  /** The source-type adapter's normalized submitted answer, before workspace files are injected. */
   rawSubmittedAnswer: Record<string, unknown>;
+  /** The exact workspace collection format errors produced for this submission. */
+  workspaceFormatErrors?: Record<string, unknown>;
+  /** The exact workspace graded files collected for this submission. */
+  workspaceGradedFiles: PreviewSubmittedFile[];
 }
+
+export type QuestionPreviewSubmissionInput =
+  | {
+      /** Posted form fields with control fields already stripped. */
+      rawSubmittedAnswer: Record<string, unknown>;
+    }
+  | {
+      snapshot: QuestionPreviewSubmissionSnapshot;
+    };
 
 export interface QuestionPreviewDocumentInput {
   /** Effective question preferences resolved by the trusted caller. */
@@ -47,6 +60,8 @@ export interface QuestionPreviewDocumentInput {
   qid: QuestionPreviewQid;
   variantSeed?: string;
   submission?: QuestionPreviewSubmissionInput;
+  /** Controls whether a submitted answer is graded or only saved for rendering. */
+  submissionMode?: QuestionPreviewSubmissionMode;
   /** Overrides the renderer's configured render mode for this render only. */
   renderMode?: QuestionPreviewRenderMode;
 }
@@ -56,6 +71,7 @@ export interface QuestionPreviewDocumentRenderer {
 }
 
 export type QuestionPreviewRenderMode = 'full' | 'question-only';
+export type QuestionPreviewSubmissionMode = 'grade' | 'save';
 
 export interface QuestionPreviewDocumentRendererOptions {
   courseSource: LocalPreviewCourseSource;
@@ -80,11 +96,15 @@ export type QuestionPreviewAnswerCheckOutcome =
   | { kind: 'invalid' }
   | { gradingMethod: Question['grading_method']; kind: 'unsupported' };
 
+export type QuestionPreviewSaveOutcome = { kind: 'saved' } | { kind: 'invalid' };
+
 interface QuestionPreviewDocumentSuccess {
   answerCheck?: QuestionPreviewAnswerCheckOutcome;
   diagnostics: QuestionPreviewDiagnostic[];
   documentHtml: string;
   ok: true;
+  saveOutcome?: QuestionPreviewSaveOutcome;
+  submissionSnapshot?: QuestionPreviewSubmissionSnapshot;
 }
 
 export interface QuestionPreviewDocumentFailure {
@@ -104,6 +124,7 @@ interface QuestionPreviewInternalRenderInput extends QuestionPreviewDocumentInpu
   localPreviewSubmissionFiles: LocalPreviewSubmissionFiles;
   localPreviewWorkspaces: PreviewWorkspaceAllocator | null;
   renderMode: QuestionPreviewRenderMode;
+  submissionMode: QuestionPreviewSubmissionMode;
   urlPrefix: string;
 }
 
@@ -434,17 +455,23 @@ function makeQuestionPreviewSuccessResult({
   bodyHtml,
   diagnostics,
   headHtml,
+  saveOutcome,
+  submissionSnapshot,
 }: {
   answerCheck?: QuestionPreviewAnswerCheckOutcome;
   bodyHtml: string;
   diagnostics: QuestionPreviewDiagnostic[];
   headHtml: string;
+  saveOutcome?: QuestionPreviewSaveOutcome;
+  submissionSnapshot?: QuestionPreviewSubmissionSnapshot;
 }): QuestionPreviewDocumentSuccess {
   return {
     ...(answerCheck == null ? {} : { answerCheck }),
     diagnostics,
     documentHtml: renderQuestionPreviewDocumentHtml({ bodyHtml, headHtml }),
     ok: true,
+    ...(saveOutcome == null ? {} : { saveOutcome }),
+    ...(submissionSnapshot == null ? {} : { submissionSnapshot }),
   };
 }
 
@@ -490,6 +517,18 @@ function previewSubmittedFiles(
   return submittedFiles;
 }
 
+function cloneSubmissionSnapshot(
+  snapshot: QuestionPreviewSubmissionSnapshot,
+): QuestionPreviewSubmissionSnapshot {
+  return {
+    rawSubmittedAnswer: structuredClone(snapshot.rawSubmittedAnswer),
+    ...(snapshot.workspaceFormatErrors === undefined
+      ? {}
+      : { workspaceFormatErrors: structuredClone(snapshot.workspaceFormatErrors) }),
+    workspaceGradedFiles: snapshot.workspaceGradedFiles.map((file) => ({ ...file })),
+  };
+}
+
 async function renderQuestionPreviewDocumentResult({
   courseSource,
   localPreviewGeneratedFiles,
@@ -499,6 +538,7 @@ async function renderQuestionPreviewDocumentResult({
   qid,
   renderMode,
   submission: submissionInput,
+  submissionMode,
   urlPrefix,
   variantSeed = '1',
 }: QuestionPreviewInternalRenderInput): Promise<QuestionPreviewDocumentResult> {
@@ -627,26 +667,35 @@ async function renderQuestionPreviewDocumentResult({
     const checkAnswerSupported = question.grading_method === 'Internal';
     const submissionDiagnostics: QuestionPreviewDiagnostic[] = [];
     let submission: Submission | null = null;
+    let submissionSnapshot: QuestionPreviewSubmissionSnapshot | undefined;
     let unsupportedGradingMethod = false;
 
     if (submissionInput != null) {
-      if (!checkAnswerSupported) {
+      if (!checkAnswerSupported && submissionMode === 'grade') {
         unsupportedGradingMethod = true;
       } else {
         phase = 'parse';
-        const rawSubmittedAnswer = questionAdapter.normalizeSubmittedAnswer(
-          submissionInput.rawSubmittedAnswer,
-        );
+        let suppliedSnapshot: QuestionPreviewSubmissionSnapshot | undefined;
+        let rawSubmittedAnswer: Record<string, unknown>;
+        if ('snapshot' in submissionInput) {
+          suppliedSnapshot = cloneSubmissionSnapshot(submissionInput.snapshot);
+          rawSubmittedAnswer = suppliedSnapshot.rawSubmittedAnswer;
+        } else {
+          rawSubmittedAnswer = questionAdapter.normalizeSubmittedAnswer(
+            submissionInput.rawSubmittedAnswer,
+          );
+        }
 
         // Mirrors `saveSubmission` in the full server: the workspace's graded
         // files are injected into `submitted_answer._files` before parsing,
-        // and file-collection failures become a `_files` format error. The
-        // variant is regenerated from the seed on this request, but generate
-        // and prepare are deterministic per seed, so the files come from the
-        // same workspace the user edited.
+        // and file-collection failures become a `_files` format error. A saved
+        // snapshot carries the exact previously collected files so replay does
+        // not observe subsequent workspace edits.
         let submittedAnswer = rawSubmittedAnswer;
-        let workspaceFormatErrors: Record<string, unknown> | undefined;
+        let workspaceFormatErrors = suppliedSnapshot?.workspaceFormatErrors;
+        let workspaceGradedFiles = suppliedSnapshot?.workspaceGradedFiles ?? [];
         if (
+          suppliedSnapshot == null &&
           workspaceSettings != null &&
           localPreviewWorkspaces != null &&
           workspaceSettings.gradedFiles.length > 0
@@ -657,16 +706,24 @@ async function renderQuestionPreviewDocumentResult({
           });
           if (!collected.ok) {
             workspaceFormatErrors = { _files: [collected.formatError] };
-          } else if (collected.files.length > 0) {
-            const existingFiles = Array.isArray(rawSubmittedAnswer._files)
-              ? rawSubmittedAnswer._files
-              : [];
-            submittedAnswer = {
-              ...rawSubmittedAnswer,
-              _files: [...existingFiles, ...collected.files],
-            };
+          } else {
+            workspaceGradedFiles = collected.files.map((file) => ({ ...file }));
           }
         }
+        if (workspaceGradedFiles.length > 0) {
+          const existingFiles = Array.isArray(rawSubmittedAnswer._files)
+            ? rawSubmittedAnswer._files
+            : [];
+          submittedAnswer = {
+            ...rawSubmittedAnswer,
+            _files: [...existingFiles, ...workspaceGradedFiles],
+          };
+        }
+        const snapshotCandidate = cloneSubmissionSnapshot({
+          rawSubmittedAnswer,
+          ...(workspaceFormatErrors === undefined ? {} : { workspaceFormatErrors }),
+          workspaceGradedFiles,
+        });
 
         const parseResult = await questionServer.parse(
           {
@@ -707,8 +764,11 @@ async function renderQuestionPreviewDocumentResult({
           submitted_answer: parseResult.data.submitted_answer,
           true_answer: parseResult.data.true_answer,
         });
+        if (submissionMode === 'save') {
+          submissionSnapshot = snapshotCandidate;
+        }
 
-        if (submission.gradable) {
+        if (submission.gradable && submissionMode === 'grade') {
           phase = 'grade';
           const gradeResult = await questionServer.grade(
             submission,
@@ -745,14 +805,17 @@ async function renderQuestionPreviewDocumentResult({
           });
         }
 
-        preparedVariant.num_tries = submission.gradable ? 1 : 0;
+        preparedVariant.num_tries = submissionMode === 'grade' && submission.gradable ? 1 : 0;
       }
     }
 
     const showCorrectAnswer =
-      renderMode === 'full' && question.show_correct_answer === true && submission != null;
+      renderMode === 'full' &&
+      submissionMode === 'grade' &&
+      question.show_correct_answer === true &&
+      submission != null;
 
-    // The graded submission's files (workspace graded files and file uploads)
+    // The submission's files (workspace graded files and file uploads)
     // are held in an in-memory store keyed by a per-render submission id, so
     // `pl-file-preview` can download and inline-preview them for this render.
     // The freeform layer builds the file URLs from `submission.id`, so it must
@@ -855,13 +918,16 @@ async function renderQuestionPreviewDocumentResult({
           });
 
     return makeQuestionPreviewSuccessResult({
-      answerCheck: unsupportedGradingMethod
-        ? { gradingMethod: question.grading_method, kind: 'unsupported' }
-        : submission == null
+      answerCheck:
+        submissionMode === 'save'
           ? undefined
-          : submission.gradable === true && submission.score != null
-            ? { kind: 'graded', score: submission.score }
-            : { kind: 'invalid' },
+          : unsupportedGradingMethod
+            ? { gradingMethod: question.grading_method, kind: 'unsupported' }
+            : submission == null
+              ? undefined
+              : submission.gradable === true && submission.score != null
+                ? { kind: 'graded', score: submission.score }
+                : { kind: 'invalid' },
       bodyHtml,
       diagnostics: [
         ...generateDiagnostics,
@@ -870,6 +936,11 @@ async function renderQuestionPreviewDocumentResult({
         ...renderDiagnostics,
       ],
       headHtml: shellHeadHtml,
+      saveOutcome:
+        submissionMode === 'save' && submission != null
+          ? { kind: submission.gradable ? 'saved' : 'invalid' }
+          : undefined,
+      submissionSnapshot,
     });
   } catch (err) {
     if (err instanceof QuestionPreviewEngineGenerationError) throw err;
@@ -904,6 +975,7 @@ export function createQuestionPreviewDocumentRenderer({
         qid: input.qid,
         renderMode: input.renderMode ?? renderMode,
         submission: input.submission,
+        submissionMode: input.submissionMode ?? 'grade',
         urlPrefix,
         variantSeed: input.variantSeed,
       });

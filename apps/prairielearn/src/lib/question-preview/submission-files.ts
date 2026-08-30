@@ -4,6 +4,7 @@ import { LRUCache } from 'lru-cache';
 
 const SUBMISSION_FILE_QUESTION_PREFIX = '/question/';
 const DEFAULT_LOCAL_PREVIEW_SUBMISSION_REGISTRY_MAX = 256;
+const DEFAULT_LOCAL_PREVIEW_SUBMISSION_REGISTRY_MAX_SIZE = 256 * 1024 * 1024;
 
 /** A graded submission file, matching a `submitted_answer._files` entry. */
 export interface PreviewSubmittedFile {
@@ -12,6 +13,10 @@ export interface PreviewSubmittedFile {
   name: string;
 }
 
+export type LocalPreviewSubmissionFilesRegistrationResult =
+  | { ok: true }
+  | { maxSize: number; ok: false; reason: 'size-limit-exceeded' };
+
 type QuestionPreviewSubmissionFileResolveResult =
   | { found: false }
   | { contents: Buffer; filename: string; found: true };
@@ -19,6 +24,29 @@ type QuestionPreviewSubmissionFileResolveResult =
 interface SubmissionFileRequest {
   filename: string;
   submissionId: string;
+}
+
+function submissionFilesSize(filesByName: Map<string, Buffer>): number {
+  let size = 0;
+  for (const [name, contents] of filesByName) {
+    size += Buffer.byteLength(name) + contents.byteLength;
+  }
+  // `lru-cache` requires every retained entry to have a positive size.
+  return Math.max(1, size);
+}
+
+function encodedSubmissionFilesSize(files: readonly PreviewSubmittedFile[]): number {
+  const sizesByName = new Map<string, number>();
+  for (const file of files) {
+    sizesByName.set(
+      file.name,
+      Buffer.byteLength(file.name) + Buffer.byteLength(file.contents, 'base64'),
+    );
+  }
+  return Math.max(
+    1,
+    [...sizesByName.values()].reduce((sum, size) => sum + size, 0),
+  );
 }
 
 function decodeSafeUrlPathSegments(encodedPath: string) {
@@ -85,16 +113,20 @@ function submissionFileRequestFromPathname({
 export class LocalPreviewSubmissionFiles {
   private nextSubmissionId = 1;
   private readonly entries: LRUCache<string, Map<string, Buffer>>;
+  private readonly maxSize: number;
   private readonly urlPrefix: string;
 
   constructor({
     max = DEFAULT_LOCAL_PREVIEW_SUBMISSION_REGISTRY_MAX,
+    maxSize = DEFAULT_LOCAL_PREVIEW_SUBMISSION_REGISTRY_MAX_SIZE,
     urlPrefix,
   }: {
     max?: number;
+    maxSize?: number;
     urlPrefix: string;
   }) {
-    this.entries = new LRUCache({ max });
+    this.entries = new LRUCache({ max, maxSize, sizeCalculation: submissionFilesSize });
+    this.maxSize = maxSize;
     this.urlPrefix = urlPrefix;
   }
 
@@ -106,12 +138,28 @@ export class LocalPreviewSubmissionFiles {
     return String(this.nextSubmissionId++);
   }
 
-  registerFiles({ files, id }: { files: PreviewSubmittedFile[]; id: string }) {
+  registerFiles({
+    files,
+    id,
+  }: {
+    files: PreviewSubmittedFile[];
+    id: string;
+  }): LocalPreviewSubmissionFilesRegistrationResult {
+    if (encodedSubmissionFilesSize(files) > this.maxSize) {
+      this.entries.delete(id);
+      return { maxSize: this.maxSize, ok: false, reason: 'size-limit-exceeded' };
+    }
+
     const filesByName = new Map<string, Buffer>();
     for (const file of files) {
       filesByName.set(file.name, Buffer.from(file.contents, 'base64'));
     }
+    if (submissionFilesSize(filesByName) > this.maxSize) {
+      this.entries.delete(id);
+      return { maxSize: this.maxSize, ok: false, reason: 'size-limit-exceeded' };
+    }
     this.entries.set(id, filesByName);
+    return { ok: true };
   }
 
   resolveRequest(pathname: string): QuestionPreviewSubmissionFileResolveResult | null {

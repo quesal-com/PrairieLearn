@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { APIRequestContext, Page } from '@playwright/test';
+
 import { expect, standaloneTest as test } from './fixtures.js';
 
 const fixtureCourseDir = fileURLToPath(
@@ -21,6 +23,19 @@ const sourceQuestionTypeCases = [
   ['legacy/file', 'Upload the starter file.'],
   ['legacy/multiple-true-false', 'Classify each arithmetic statement.'],
 ] as const;
+const assessmentLocator = { aid: 'browser-contract', ciid: 'local' } as const;
+const desktopViewport = { height: 900, width: 1440 } as const;
+const narrowViewport = { height: 844, width: 390 } as const;
+
+interface AssessmentPreviewBrowserState {
+  questions?: {
+    accessMode: string;
+    slotId: string;
+    status: string;
+  }[];
+  revision: number;
+  status: 'finished' | 'in_progress' | 'not_started';
+}
 
 async function startCompiledPreviewServer(args: string[] = []) {
   const child = spawn(
@@ -81,6 +96,78 @@ async function startCompiledPreviewServer(args: string[] = []) {
     },
     origin,
   };
+}
+
+async function readAssessmentPreviewState(
+  request: APIRequestContext,
+  overviewUrl: string,
+): Promise<AssessmentPreviewBrowserState> {
+  const response = await request.get(`${overviewUrl}?format=json`);
+  expect(response.status()).toBe(200);
+  return (await response.json()) as AssessmentPreviewBrowserState;
+}
+
+async function createAssessmentPreview(
+  request: APIRequestContext,
+  origin: string,
+  { started = false }: { started?: boolean } = {},
+) {
+  const createdSession = await request.post(`${origin}/preview-sessions`, {
+    data: { courseDir: fixtureCourseDir },
+  });
+  expect(createdSession.status()).toBe(201);
+  const { previewSessionId } = (await createdSession.json()) as {
+    previewSessionId: string;
+  };
+
+  const createdRun = await request.post(
+    `${origin}/preview-sessions/${previewSessionId}/assessment-preview-runs`,
+    {
+      data: {
+        locator: assessmentLocator,
+        reuse: true,
+        seed: 'standalone-browser-contract',
+      },
+    },
+  );
+  expect(createdRun.status()).toBe(201);
+  const createdRunBody = (await createdRun.json()) as {
+    assessmentPreviewRunId: string;
+    href: string;
+  };
+  const overviewUrl = new URL(createdRunBody.href, origin).toString();
+  const actionsUrl = `${overviewUrl}actions`;
+
+  let state = await readAssessmentPreviewState(request, overviewUrl);
+  if (started) {
+    const startedRun = await request.post(actionsUrl, {
+      data: { action: 'start', revision: state.revision },
+    });
+    expect(startedRun.status()).toBe(200);
+    state = (await startedRun.json()) as AssessmentPreviewBrowserState;
+    expect(state.status).toBe('in_progress');
+  }
+  if (state.questions?.length !== 2) {
+    throw new Error('The standalone assessment fixture must sample exactly two questions.');
+  }
+
+  return {
+    actionsUrl,
+    assessmentPreviewRunId: createdRunBody.assessmentPreviewRunId,
+    overviewUrl,
+    questionSlotIds: state.questions.map((question) => question.slotId),
+    questionUrl(slotId: string) {
+      return `${overviewUrl}questions/${encodeURIComponent(slotId)}`;
+    },
+  };
+}
+
+async function expectNoHorizontalDocumentOverflow(page: Page) {
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
 }
 
 test('creates a runtime Local Preview Session and hydrates every Source Question Type', async ({
@@ -287,6 +374,293 @@ test('keeps session-owned browser resources scoped while PrairieLearn assets sta
     const submissionFile = await request.get(`${server.origin}${submissionPath}/solution.py`);
     expect(submissionFile.status()).toBe(200);
     expect(await submissionFile.text()).toBe('print("session owned")\n');
+  } finally {
+    await server.close();
+  }
+});
+
+test('keeps the standalone assessment overview usable at desktop and narrow widths', async ({
+  page,
+  request,
+}) => {
+  const server = await startCompiledPreviewServer(['--render-mode', 'full']);
+
+  try {
+    const preview = await createAssessmentPreview(request, server.origin, { started: true });
+    await page.setViewportSize(desktopViewport);
+    const response = await page.goto(preview.overviewUrl);
+
+    expect(response?.status()).toBe(200);
+    await expect(
+      page.getByRole('heading', { name: 'Standalone assessment browser contract' }),
+    ).toBeVisible();
+    const questionsTable = page.getByRole('table', { name: 'Questions' });
+    await expect(questionsTable).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Freeform browser contract' })).toBeVisible();
+    await expect(page.getByText('Multiple choice browser contract')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Finish preview' })).toBeVisible();
+    await expectNoHorizontalDocumentOverflow(page);
+
+    await page.setViewportSize(narrowViewport);
+    await expect(
+      page.getByRole('heading', { name: 'Standalone assessment browser contract' }),
+    ).toBeVisible();
+    await expect(questionsTable).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Freeform browser contract' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Finish preview' })).toBeVisible();
+    await expectNoHorizontalDocumentOverflow(page);
+    await expect(page).toHaveURL(preview.overviewUrl);
+  } finally {
+    await server.close();
+  }
+});
+
+test('opens accessible local preview details and restores trigger focus', async ({
+  page,
+  request,
+}) => {
+  const server = await startCompiledPreviewServer(['--render-mode', 'full']);
+
+  try {
+    const preview = await createAssessmentPreview(request, server.origin);
+    await page.goto(preview.overviewUrl);
+    const detailsTrigger = page.getByRole('button', { name: 'Preview details', exact: true });
+    const detailsDialog = page.getByRole('dialog', { name: 'Local preview details' });
+
+    await expect(detailsTrigger).toBeVisible();
+    await detailsTrigger.click();
+    await expect(detailsDialog).toBeVisible();
+    await expect(detailsDialog).toHaveAttribute('aria-modal', 'true');
+    await expect
+      .poll(() =>
+        detailsDialog.evaluate((dialog) => dialog.contains(dialog.ownerDocument.activeElement)),
+      )
+      .toBe(true);
+    await expect(page).toHaveURL(preview.overviewUrl);
+
+    await detailsDialog.getByRole('button', { name: 'Close' }).click();
+    await expect(detailsDialog).toBeHidden();
+    await expect(detailsTrigger).toBeFocused();
+
+    await detailsTrigger.click();
+    await expect(detailsDialog).toBeVisible();
+    await expect
+      .poll(() =>
+        detailsDialog.evaluate((dialog) => dialog.contains(dialog.ownerDocument.activeElement)),
+      )
+      .toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(detailsDialog).toBeHidden();
+    await expect(detailsTrigger).toBeFocused();
+    await expect(page).toHaveURL(preview.overviewUrl);
+  } finally {
+    await server.close();
+  }
+});
+
+test('uses a responsive 9/3 assessment question and sidebar layout', async ({ page, request }) => {
+  const server = await startCompiledPreviewServer(['--render-mode', 'full']);
+
+  try {
+    const preview = await createAssessmentPreview(request, server.origin, { started: true });
+    const questionUrl = preview.questionUrl(preview.questionSlotIds[0]);
+    await page.setViewportSize(desktopViewport);
+    const response = await page.goto(questionUrl);
+
+    expect(response?.status()).toBe(200);
+    await expect(page.getByText('Freeform browser contract: Variant seed')).toBeVisible();
+    const questionRegion = page
+      .getByRole('main')
+      .getByRole('region', { name: 'Question', exact: true });
+    const assessmentSidebar = page.getByRole('complementary', {
+      name: 'Assessment navigation and score',
+    });
+    await expect(questionRegion).toBeVisible();
+    await expect(assessmentSidebar).toBeVisible();
+
+    const desktopQuestionBox = await questionRegion.boundingBox();
+    const desktopSidebarBox = await assessmentSidebar.boundingBox();
+    expect(desktopQuestionBox).not.toBeNull();
+    expect(desktopSidebarBox).not.toBeNull();
+    if (desktopQuestionBox == null || desktopSidebarBox == null) {
+      throw new Error('The desktop question layout must have measurable regions.');
+    }
+    expect(Math.abs(desktopQuestionBox.y - desktopSidebarBox.y)).toBeLessThan(24);
+    expect(desktopSidebarBox.x).toBeGreaterThanOrEqual(
+      desktopQuestionBox.x + desktopQuestionBox.width - 2,
+    );
+    expect(desktopQuestionBox.width / desktopSidebarBox.width).toBeGreaterThan(2.4);
+    expect(desktopQuestionBox.width / desktopSidebarBox.width).toBeLessThan(3.6);
+    await expectNoHorizontalDocumentOverflow(page);
+
+    await page.setViewportSize(narrowViewport);
+    const narrowQuestionBox = await questionRegion.boundingBox();
+    const narrowSidebarBox = await assessmentSidebar.boundingBox();
+    expect(narrowQuestionBox).not.toBeNull();
+    expect(narrowSidebarBox).not.toBeNull();
+    if (narrowQuestionBox == null || narrowSidebarBox == null) {
+      throw new Error('The narrow question layout must have measurable regions.');
+    }
+    expect(narrowSidebarBox.y).toBeGreaterThanOrEqual(
+      narrowQuestionBox.y + narrowQuestionBox.height - 2,
+    );
+    expect(Math.abs(narrowQuestionBox.x - narrowSidebarBox.x)).toBeLessThan(24);
+    expect(narrowQuestionBox.width / narrowSidebarBox.width).toBeGreaterThan(0.9);
+    expect(narrowQuestionBox.width / narrowSidebarBox.width).toBeLessThan(1.1);
+    await expectNoHorizontalDocumentOverflow(page);
+    await expect(page).toHaveURL(questionUrl);
+  } finally {
+    await server.close();
+  }
+});
+
+test('saves, reloads, and grades an assessment question through the real runtime', async ({
+  page,
+  request,
+}) => {
+  const server = await startCompiledPreviewServer(['--render-mode', 'full']);
+
+  try {
+    const preview = await createAssessmentPreview(request, server.origin);
+    await page.goto(preview.overviewUrl);
+    await page.getByRole('button', { name: 'Start assessment', exact: true }).click();
+    await expect(page.getByText('In progress', { exact: true })).toBeVisible();
+
+    await page.getByRole('link', { name: 'Freeform browser contract' }).click();
+    const answer = page.getByRole('textbox');
+    const questionScore = page.getByRole('table', { name: 'Question score' });
+    const assessmentScore = page.getByRole('table', { name: 'Assessment score' });
+    await answer.fill('2');
+    await page.getByRole('button', { name: 'Save only', exact: true }).click();
+
+    await expect(questionScore.getByText('Saved', { exact: true })).toBeVisible();
+    await expect(page.getByText('saved, not graded', { exact: true })).toBeVisible();
+    await expect(answer).toHaveValue('2');
+
+    await page.reload();
+    await expect(answer).toHaveValue('2');
+    await expect(questionScore.getByText('Saved', { exact: true })).toBeVisible();
+    await expect(page.getByText('saved, not graded', { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Save & Grade', exact: true }).click();
+    await expect(page.getByTestId('submission-status').getByText('100%')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Correct answer' })).toBeVisible();
+    await expect(questionScore.getByText('Complete', { exact: true })).toBeVisible();
+    await expect(questionScore).toContainText('2 / 2');
+    await expect(assessmentScore).toContainText('2 / 5');
+  } finally {
+    await server.close();
+  }
+});
+
+test('confirms crossing a lockpoint before posting to the existing actions route', async ({
+  page,
+  request,
+}) => {
+  const server = await startCompiledPreviewServer(['--render-mode', 'full']);
+
+  try {
+    const preview = await createAssessmentPreview(request, server.origin, { started: true });
+    await page.goto(preview.overviewUrl);
+    const stateBefore = await readAssessmentPreviewState(request, preview.overviewUrl);
+    const lockpointTrigger = page.getByRole('button', {
+      name: 'Proceed to next questions',
+      exact: true,
+    });
+    const lockpointDialog = page.getByRole('dialog', {
+      name: 'Proceed to next questions?',
+    });
+
+    await expect(lockpointTrigger).toBeVisible();
+    await lockpointTrigger.click();
+    await expect(lockpointDialog).toBeVisible();
+    await expect(page).toHaveURL(preview.overviewUrl);
+    const stateWhileOpen = await readAssessmentPreviewState(request, preview.overviewUrl);
+    expect(stateWhileOpen.revision).toBe(stateBefore.revision);
+    expect(
+      stateWhileOpen.questions?.find((question) => question.slotId === preview.questionSlotIds[1])
+        ?.accessMode,
+    ).toBe('blocked_lockpoint');
+
+    const safetyGate = lockpointDialog.getByRole('checkbox', {
+      name: 'I understand that I will not be able to submit answers to previous questions',
+    });
+    const confirmButton = lockpointDialog.getByRole('button', { name: 'Confirm' });
+    await expect(confirmButton).toBeDisabled();
+    await safetyGate.check();
+    await expect(confirmButton).toBeEnabled();
+    await lockpointDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(lockpointDialog).toBeHidden();
+    expect((await readAssessmentPreviewState(request, preview.overviewUrl)).revision).toBe(
+      stateBefore.revision,
+    );
+
+    await lockpointTrigger.click();
+    await expect(lockpointDialog).toBeVisible();
+    if (!(await safetyGate.isChecked())) await safetyGate.check();
+    const actionResponsePromise = page.waitForResponse(
+      (response) => response.url() === preview.actionsUrl && response.request().method() === 'POST',
+    );
+    await confirmButton.click();
+    const actionResponse = await actionResponsePromise;
+    expect(actionResponse.status()).toBe(303);
+    const submittedAction = new URLSearchParams(actionResponse.request().postData() ?? '');
+    expect(submittedAction.get('action')).toBe('cross-lockpoint');
+    expect(submittedAction.get('revision')).toBe(String(stateBefore.revision));
+    expect(submittedAction.get('zoneId')).toBeTruthy();
+    await expect(page).toHaveURL(preview.overviewUrl);
+    await expect
+      .poll(async () => (await readAssessmentPreviewState(request, preview.overviewUrl)).revision)
+      .toBe(stateBefore.revision + 1);
+    const stateAfter = await readAssessmentPreviewState(request, preview.overviewUrl);
+    expect(
+      stateAfter.questions?.find((question) => question.slotId === preview.questionSlotIds[1])
+        ?.accessMode,
+    ).toBe('default');
+  } finally {
+    await server.close();
+  }
+});
+
+test('confirms finishing before posting to the existing actions route', async ({
+  page,
+  request,
+}) => {
+  const server = await startCompiledPreviewServer(['--render-mode', 'full']);
+
+  try {
+    const preview = await createAssessmentPreview(request, server.origin, { started: true });
+    await page.goto(preview.overviewUrl);
+    const stateBefore = await readAssessmentPreviewState(request, preview.overviewUrl);
+    const finishTrigger = page.getByRole('button', { name: 'Finish preview', exact: true });
+    const finishDialog = page.getByRole('dialog', { name: 'All done?' });
+
+    await finishTrigger.click();
+    await expect(finishDialog).toBeVisible();
+    await expect(finishDialog.getByText('There are still unanswered questions.')).toBeVisible();
+    await expect(page).toHaveURL(preview.overviewUrl);
+    expect((await readAssessmentPreviewState(request, preview.overviewUrl)).revision).toBe(
+      stateBefore.revision,
+    );
+    await finishDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(finishDialog).toBeHidden();
+    await expect(finishTrigger).toBeFocused();
+
+    await finishTrigger.click();
+    await expect(finishDialog).toBeVisible();
+    const actionResponsePromise = page.waitForResponse(
+      (response) => response.url() === preview.actionsUrl && response.request().method() === 'POST',
+    );
+    await finishDialog.getByRole('button', { name: 'Finish preview', exact: true }).click();
+    const actionResponse = await actionResponsePromise;
+    expect(actionResponse.status()).toBe(303);
+    const submittedAction = new URLSearchParams(actionResponse.request().postData() ?? '');
+    expect(submittedAction.get('action')).toBe('finish');
+    expect(submittedAction.get('revision')).toBe(String(stateBefore.revision));
+    await expect(page).toHaveURL(preview.overviewUrl);
+    await expect
+      .poll(async () => (await readAssessmentPreviewState(request, preview.overviewUrl)).status)
+      .toBe('finished');
   } finally {
     await server.close();
   }

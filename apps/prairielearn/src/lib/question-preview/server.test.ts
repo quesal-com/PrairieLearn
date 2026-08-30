@@ -6,12 +6,13 @@ import type { AddressInfo, Socket } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+import * as cheerio from 'cheerio';
 import Docker from 'dockerode';
 import { assert, describe, expect, it, vi } from 'vitest';
 
 import * as assets from '../assets.js';
 
-import type { QuestionPreviewDiagnostic } from './document.js';
+import type { QuestionPreviewDiagnostic, QuestionPreviewSubmissionInput } from './document.js';
 import { createQuestionPreviewRuntime } from './render.js';
 import { parseQuestionPreviewServerOptions, startQuestionPreviewServer } from './server.js';
 import {
@@ -27,6 +28,15 @@ type StartTestQuestionPreviewServerParams = Omit<
   'createRuntime'
 > &
   Partial<Pick<StartQuestionPreviewServerParams, 'createRuntime'>>;
+
+function questionPreviewRawSubmittedAnswer(
+  submission: QuestionPreviewSubmissionInput | undefined,
+): Record<string, unknown> | undefined {
+  if (submission == null) return undefined;
+  return 'snapshot' in submission
+    ? submission.snapshot.rawSubmittedAnswer
+    : submission.rawSubmittedAnswer;
+}
 
 /**
  * A docker client stub for server tests: no containers exist, no images can
@@ -289,6 +299,38 @@ async function startAssessmentPreviewRun(
     body: JSON.stringify({ action: 'start', revision: 0, ...body }),
     headers: { 'content-type': 'application/json' },
     method: 'POST',
+  });
+}
+
+async function assessmentQuestionPostBody(
+  started: Awaited<ReturnType<typeof startQuestionPreviewServer>>,
+  assessmentPreviewRunId: string,
+  slotId: string,
+  fields: Record<string, string>,
+  options: { variantNumber?: number } = {},
+) {
+  const response = await fetch(
+    `${startupSessionUrl(started)}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`,
+  );
+  nodeAssert.equal(response.status, 200);
+  const state = (await response.json()) as {
+    questions?: { slotId: string; variant: { number: number } }[];
+    revision: number;
+  };
+  const variantNumber =
+    state.questions?.find((question) => question.slotId === slotId)?.variant.number ??
+    options.variantNumber;
+  nodeAssert.equal(typeof state.revision, 'number');
+  nodeAssert.equal(
+    typeof variantNumber,
+    'number',
+    `Expected public assessment state to expose slot "${slotId}" or an explicit variant number.`,
+  );
+
+  return new URLSearchParams({
+    ...fields,
+    __assessment_preview_revision: String(state.revision),
+    __assessment_preview_variant_number: String(variantNumber),
   });
 }
 
@@ -2176,6 +2218,70 @@ describe('question preview server direct preview route', () => {
     }
   });
 
+  it('keeps assessment question render diagnostics in the preview details dialog', async () => {
+    const courseDir = await makeTempCourse();
+    const canonicalCourseDir = await fs.realpath(courseDir);
+    await writeAssessmentPreviewFixture(courseDir);
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async () =>
+          testFailureDocument([
+            {
+              data: {
+                sourceFile: `${canonicalCourseDir}/questions/unit/question/server.py`,
+                variant: 1,
+              },
+              fatal: true,
+              message: 'The question template could not be rendered.',
+              name: 'TemplateRenderError',
+              phase: 'render',
+            },
+          ]),
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'question-diagnostic-sample',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { href } = (await created.json()) as { href: string };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+
+      const response = await fetch(
+        `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
+      );
+      const responseHtml = await response.text();
+      assert.equal(response.status, 200);
+      assert.match(responseHtml, /Question preview failed/);
+      const $ = cheerio.load(responseHtml);
+      const detailsDialog = $('#assessmentPreviewDetailsModal');
+      assert.lengthOf(detailsDialog, 1);
+      assert.include(detailsDialog.text(), 'TemplateRenderError');
+      assert.include(detailsDialog.text(), 'The question template could not be rendered.');
+      assert.notInclude($('main').text(), 'TemplateRenderError');
+      assert.notInclude($('main').text(), 'The question template could not be rendered.');
+      assert.notInclude(responseHtml, courseDir);
+      assert.notInclude(responseHtml, canonicalCourseDir);
+      assert.include(detailsDialog.text(), '<course>/questions/unit/question/server.py');
+      assert.match(
+        $('button[data-bs-target="#assessmentPreviewDetailsModal"]').attr('aria-label') ?? '',
+        /1 error/,
+      );
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
   it('grades an assessment question and exposes the reduced run state', async () => {
     const courseDir = await makeTempCourse();
     await writeAssessmentPreviewFixture(courseDir);
@@ -2185,7 +2291,9 @@ describe('question preview server direct preview route', () => {
       createRuntime: async () => ({
         close: async () => {},
         render: async (input) => {
-          if (input.submission != null) submittedAnswers.push(input.submission.rawSubmittedAnswer);
+          if (input.submission != null) {
+            submittedAnswers.push(questionPreviewRawSubmittedAnswer(input.submission));
+          }
           return {
             ...testSuccessDocument('<p>Assessment question body</p>'),
             ...(input.submission == null
@@ -2215,12 +2323,17 @@ describe('question preview server direct preview route', () => {
       const questionUrl = `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`;
 
       const graded = await fetch(questionUrl, {
-        body: new URLSearchParams({
-          __action: 'grade',
-          __csrf_token: 'ignored-token',
-          __variant_id: '9',
-          ans: '42',
-        }),
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          {
+            __action: 'grade',
+            __csrf_token: 'ignored-token',
+            __variant_id: '9',
+            ans: '42',
+          },
+        ),
         method: 'POST',
       });
       const gradedHtml = await graded.text();
@@ -2249,7 +2362,12 @@ describe('question preview server direct preview route', () => {
       expect(stateBody.questions[0]).not.toHaveProperty('savedAnswer');
 
       const closedVariant = await fetch(questionUrl, {
-        body: new URLSearchParams({ __action: 'grade', ans: 'again' }),
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          { __action: 'grade', ans: 'again' },
+        ),
         method: 'POST',
       });
       assert.equal(closedVariant.status, 409);
@@ -2257,6 +2375,163 @@ describe('question preview server direct preview route', () => {
         error: { code: 'assessment_preview_question_not_editable' },
       });
       assert.deepEqual(submittedAnswers, [{ ans: '42' }]);
+    } finally {
+      await started.close();
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('does not expose a new answer check when an assessment grade is rate-limited', async () => {
+    const courseDir = await makeTempCourse();
+    await writeAssessmentPreviewFixture(courseDir, {
+      zones: [
+        {
+          questions: [
+            {
+              gradeRateMinutes: 5,
+              id: 'unit/question',
+              points: 2,
+              triesPerVariant: 3,
+            },
+          ],
+        },
+      ],
+    });
+    let gradeRenderCount = 0;
+    let saveRenderCount = 0;
+    const started = await startTestQuestionPreviewServer({
+      argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
+      createRuntime: async () => ({
+        close: async () => {},
+        render: async (input) => {
+          if (input.submission == null) {
+            return testSuccessDocument('<p>Assessment question body</p>');
+          }
+          if (input.submissionMode === 'save') {
+            saveRenderCount += 1;
+            return {
+              ...testSuccessDocument('<p>The latest answer is saved and awaiting grading.</p>'),
+              saveOutcome: { kind: 'saved' as const },
+            };
+          }
+          gradeRenderCount += 1;
+          if (gradeRenderCount === 1) {
+            return {
+              ...testSuccessDocument('<p>First submission was incorrect.</p>'),
+              answerCheck: { kind: 'graded' as const, score: 0 },
+            };
+          }
+          return {
+            ...testSuccessDocument(`
+              <div class="grading-block">
+                <h2>Correct answer</h2>
+                <p>The rate-limited submission was correct.</p>
+              </div>
+            `),
+            answerCheck: { kind: 'graded' as const, score: 1 },
+          };
+        },
+      }),
+    });
+
+    try {
+      const sessionUrl = startupSessionUrl(started);
+      const created = await fetch(`${sessionUrl}/assessment-preview-runs`, {
+        body: JSON.stringify({
+          locator: { aid: 'module one/homework 1', ciid: '2026/fall' },
+          reuse: true,
+          seed: 'grade-rate-limited-sample',
+        }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const { assessmentPreviewRunId, href } = (await created.json()) as {
+        assessmentPreviewRunId: string;
+        href: string;
+      };
+      assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
+      const questionUrl = `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`;
+      const stateUrl = `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`;
+
+      const firstGrade = await fetch(questionUrl, {
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          { __action: 'grade', ans: 'first' },
+        ),
+        method: 'POST',
+      });
+      assert.equal(firstGrade.status, 200);
+      const stateAfterFirstGrade = (await (await fetch(stateUrl)).json()) as {
+        questions: {
+          autoPoints: number;
+          highestSubmissionScore: number;
+          numberAttempts: number;
+          status: string;
+        }[];
+        revision: number;
+        score: { points: number | null; scorePercent: number | null };
+        status: string;
+      };
+      expect(stateAfterFirstGrade).toMatchObject({
+        questions: [
+          {
+            autoPoints: 0,
+            highestSubmissionScore: 0,
+            numberAttempts: 1,
+            status: 'incorrect',
+          },
+        ],
+        score: { points: 0, scorePercent: 0 },
+      });
+
+      const secondGrade = await fetch(questionUrl, {
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          { __action: 'grade', ans: 'second' },
+        ),
+        method: 'POST',
+      });
+      const secondGradeHtml = await secondGrade.text();
+      assert.equal(secondGrade.status, 200);
+      nodeAssert.doesNotMatch(secondGradeHtml, /The rate-limited submission was correct/i);
+      nodeAssert.doesNotMatch(secondGradeHtml, /Correct answer/i);
+      const $ = cheerio.load(secondGradeHtml);
+      const inlineRateLimitMessages = $('main [role="alert"], main [role="status"]').filter(
+        (_, element) => /(?:rate limit|graded again|grading .*available)/i.test($(element).text()),
+      );
+      assert.lengthOf(inlineRateLimitMessages, 1);
+
+      const stateAfterRateLimit = (await (
+        await fetch(stateUrl)
+      ).json()) as typeof stateAfterFirstGrade;
+      expect(stateAfterRateLimit.questions[0]).toMatchObject({
+        ...stateAfterFirstGrade.questions[0],
+        status: 'saved',
+      });
+      expect(stateAfterRateLimit.score).toEqual(stateAfterFirstGrade.score);
+      assert.equal(saveRenderCount, 1);
+      assert.equal(gradeRenderCount, 1);
+
+      const finished = await fetch(
+        `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
+        {
+          body: JSON.stringify({ action: 'finish', revision: stateAfterRateLimit.revision }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        },
+      );
+      assert.equal(finished.status, 200);
+      expect(await finished.json()).toMatchObject({
+        questions: [{ autoPoints: 2, numberAttempts: 2, status: 'complete' }],
+        score: { points: 2, scorePercent: 100 },
+        status: 'finished',
+      });
+      assert.equal(saveRenderCount, 1);
+      assert.equal(gradeRenderCount, 2);
     } finally {
       await started.close();
       await fs.rm(courseDir, { force: true, recursive: true });
@@ -2336,18 +2611,26 @@ describe('question preview server direct preview route', () => {
       requireHonorCode: false,
       type: 'Exam',
     });
-    const renderSubmissions: unknown[] = [];
+    const renderSubmissions: {
+      answer: Record<string, unknown> | null;
+      mode: 'grade' | 'save' | undefined;
+    }[] = [];
     const started = await startTestQuestionPreviewServer({
       argv: ['--course-dir', courseDir, '--port', '0', '--render-mode', 'full'],
       createRuntime: async () => ({
         close: async () => {},
         render: async (input) => {
-          renderSubmissions.push(input.submission?.rawSubmittedAnswer ?? null);
+          renderSubmissions.push({
+            answer: questionPreviewRawSubmittedAnswer(input.submission) ?? null,
+            mode: input.submissionMode,
+          });
           return {
             ...testSuccessDocument('<p>Deferred assessment question body</p>'),
             ...(input.submission == null
               ? {}
-              : { answerCheck: { kind: 'graded' as const, score: 1 } }),
+              : input.submissionMode === 'save'
+                ? { saveOutcome: { kind: 'saved' as const } }
+                : { answerCheck: { kind: 'graded' as const, score: 1 } }),
           };
         },
       }),
@@ -2373,12 +2656,33 @@ describe('question preview server direct preview route', () => {
       const saved = await fetch(
         `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
         {
-          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          body: await assessmentQuestionPostBody(
+            started,
+            assessmentPreviewRunId,
+            'zone-1-pool-1-alternative-1',
+            { __action: 'save', ans: '42' },
+          ),
           method: 'POST',
         },
       );
       assert.equal(saved.status, 200);
-      assert.deepEqual(renderSubmissions, [null]);
+      assert.equal(saved.redirected, true);
+      assert.match(await saved.text(), /Saved/);
+      assert.deepEqual(renderSubmissions, [
+        { answer: { ans: '42' }, mode: 'save' },
+        { answer: { ans: '42' }, mode: 'save' },
+      ]);
+
+      const reloaded = await fetch(
+        `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
+      );
+      assert.equal(reloaded.status, 200);
+      assert.match(await reloaded.text(), /Saved/);
+      assert.deepEqual(renderSubmissions, [
+        { answer: { ans: '42' }, mode: 'save' },
+        { answer: { ans: '42' }, mode: 'save' },
+        { answer: { ans: '42' }, mode: 'save' },
+      ]);
 
       const finished = await fetch(
         `${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}/actions`,
@@ -2401,7 +2705,12 @@ describe('question preview server direct preview route', () => {
         score: { points: 2, scorePercent: 100 },
         status: 'finished',
       });
-      assert.deepEqual(renderSubmissions, [null, { ans: '42' }]);
+      assert.deepEqual(renderSubmissions, [
+        { answer: { ans: '42' }, mode: 'save' },
+        { answer: { ans: '42' }, mode: 'save' },
+        { answer: { ans: '42' }, mode: 'save' },
+        { answer: { ans: '42' }, mode: 'grade' },
+      ]);
     } finally {
       await started.close();
       await fs.rm(courseDir, { force: true, recursive: true });
@@ -2423,6 +2732,12 @@ describe('question preview server direct preview route', () => {
         render: async (input) => {
           if (input.submission == null) {
             return testSuccessDocument('<p>Deferred assessment question body</p>');
+          }
+          if (input.submissionMode === 'save') {
+            return {
+              ...testSuccessDocument('<p>Deferred assessment question body</p>'),
+              saveOutcome: { kind: 'saved' as const },
+            };
           }
           if (failFinishGrading) return testFailureDocument();
           return {
@@ -2452,7 +2767,12 @@ describe('question preview server direct preview route', () => {
       const saved = await fetch(
         `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
         {
-          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          body: await assessmentQuestionPostBody(
+            started,
+            assessmentPreviewRunId,
+            'zone-1-pool-1-alternative-1',
+            { __action: 'grade', ans: '42' },
+          ),
           method: 'POST',
         },
       );
@@ -2636,7 +2956,12 @@ describe('question preview server direct preview route', () => {
       assert.equal((await startAssessmentPreviewRun(started, href)).status, 200);
 
       const grading = fetch(`${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`, {
-        body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          { __action: 'grade', ans: '42' },
+        ),
         method: 'POST',
       });
       await gradingStarted;
@@ -2705,7 +3030,12 @@ describe('question preview server direct preview route', () => {
       assert.deepEqual(renderCalls, [{ renderMode: 'question-only', submission: undefined }]);
 
       const answerCheck = await fetch(questionUrl, {
-        body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          { __action: 'grade', ans: '42' },
+        ),
         method: 'POST',
       });
       assert.equal(answerCheck.status, 405);
@@ -2800,7 +3130,13 @@ describe('question preview server direct preview route', () => {
       assert.deepEqual(renderCalls, []);
 
       const answer = await fetch(questionUrl, {
-        body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+        body: await assessmentQuestionPostBody(
+          started,
+          assessmentPreviewRunId,
+          'zone-1-pool-1-alternative-1',
+          { __action: 'grade', ans: '42' },
+          { variantNumber: 1 },
+        ),
         method: 'POST',
       });
 
@@ -2893,7 +3229,12 @@ describe('question preview server direct preview route', () => {
       const readOnlyAnswer = await fetch(
         `${serverUrl(started)}${lockpointRun.href}questions/zone-1-pool-1-alternative-1`,
         {
-          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          body: await assessmentQuestionPostBody(
+            started,
+            lockpointRun.assessmentPreviewRunId,
+            'zone-1-pool-1-alternative-1',
+            { __action: 'grade', ans: '42' },
+          ),
           method: 'POST',
         },
       );
@@ -2916,7 +3257,12 @@ describe('question preview server direct preview route', () => {
       const finishedAnswer = await fetch(
         `${serverUrl(started)}${finishedRun.href}questions/zone-1-pool-1-alternative-1`,
         {
-          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          body: await assessmentQuestionPostBody(
+            started,
+            finishedRun.assessmentPreviewRunId,
+            'zone-1-pool-1-alternative-1',
+            { __action: 'grade', ans: '42' },
+          ),
           method: 'POST',
         },
       );
@@ -2994,7 +3340,13 @@ describe('question preview server direct preview route', () => {
       const answer = await fetch(
         `${serverUrl(started)}${href}questions/zone-1-pool-1-alternative-1`,
         {
-          body: new URLSearchParams({ __action: 'grade', ans: '42' }),
+          body: await assessmentQuestionPostBody(
+            started,
+            assessmentPreviewRunId,
+            'zone-1-pool-1-alternative-1',
+            { __action: 'grade', ans: '42' },
+            { variantNumber: 1 },
+          ),
           method: 'POST',
         },
       );
@@ -3051,8 +3403,15 @@ describe('question preview server direct preview route', () => {
           method: 'POST',
         },
       );
-      assert.equal(finish.status, 200);
-      expect(await finish.json()).toMatchObject({ status: 'finished' });
+      assert.equal(finish.status, 403);
+      expect(await finish.json()).toMatchObject({
+        error: { code: 'assessment_not_submittable' },
+      });
+      expect(
+        await (
+          await fetch(`${sessionUrl}/assessment-preview-runs/${assessmentPreviewRunId}?format=json`)
+        ).json(),
+      ).toMatchObject({ revision: 2, status: 'in_progress' });
       assert.deepEqual(renderCalls, []);
     } finally {
       await started.close();
@@ -3135,7 +3494,7 @@ describe('question preview server direct preview route', () => {
       createRuntime: async () => ({
         close: async () => {},
         render: async (input) => {
-          submittedAnswers.push(input.submission?.rawSubmittedAnswer);
+          submittedAnswers.push(questionPreviewRawSubmittedAnswer(input.submission));
           if (submittedAnswers.length === 1) {
             await firstRenderCanFinish;
             markFirstRenderFinished();

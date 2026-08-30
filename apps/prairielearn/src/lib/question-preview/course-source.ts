@@ -116,6 +116,44 @@ function resourceRootPathSegments(resource: LocalPreviewCourseResource): string[
   }
 }
 
+const REDACTED_DIAGNOSTIC_VALUE = '<redacted>';
+const SENSITIVE_DIAGNOSTIC_KEY_WORDS = new Set([
+  'auth',
+  'authentication',
+  'authorisation',
+  'authorization',
+  'bearer',
+  'cookie',
+  'cookies',
+  'credential',
+  'credentials',
+  'passphrase',
+  'passwd',
+  'password',
+  'passwords',
+  'pwd',
+  'secret',
+  'secrets',
+  'token',
+  'tokens',
+]);
+
+function isSensitiveDiagnosticKey(key: string): boolean {
+  const words = key
+    .replaceAll(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (words.some((word) => SENSITIVE_DIAGNOSTIC_KEY_WORDS.has(word))) return true;
+
+  const normalized = words.join('');
+  return (
+    normalized.includes('apikey') ||
+    normalized.includes('accesskey') ||
+    normalized.includes('privatekey')
+  );
+}
+
 function sanitizeDiagnosticValue(value: unknown, courseDir: string): unknown {
   if (typeof value === 'string') return value.split(courseDir).join('<course>');
   if (Array.isArray(value)) {
@@ -123,7 +161,12 @@ function sanitizeDiagnosticValue(value: unknown, courseDir: string): unknown {
   }
   if (typeof value === 'object' && value !== null) {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, sanitizeDiagnosticValue(item, courseDir)]),
+      Object.entries(value).map(([key, item]) => [
+        key,
+        isSensitiveDiagnosticKey(key)
+          ? REDACTED_DIAGNOSTIC_VALUE
+          : sanitizeDiagnosticValue(item, courseDir),
+      ]),
     );
   }
   return value;

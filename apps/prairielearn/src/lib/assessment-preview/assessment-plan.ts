@@ -13,6 +13,7 @@ export type AssessmentPlanDiagnosticSeverity = 'error' | 'warning' | 'unsupporte
 
 export interface AssessmentPlanDiagnostic {
   code: string;
+  data?: unknown;
   severity: AssessmentPlanDiagnosticSeverity;
   message: string;
   path: string;
@@ -91,6 +92,7 @@ export interface AssessmentPlan {
   assessmentSet: string;
   assessmentSetAbbreviation: string;
   courseTimezone: string;
+  showQuestionTitles: boolean;
   shuffleQuestions: boolean;
   requireHonorCode: boolean;
   honorCode: string | null;
@@ -750,6 +752,7 @@ export function compileAssessmentPlan({
     assessmentSet: assessment.set,
     assessmentSetAbbreviation: course.assessmentSetAbbreviation,
     courseTimezone: course.timezone,
+    showQuestionTitles: assessment.showQuestionTitles ?? assessment.type === 'Homework',
     shuffleQuestions: assessment.shuffleQuestions ?? assessment.type === 'Exam',
     requireHonorCode: assessment.requireHonorCode ?? assessment.type === 'Exam',
     honorCode: assessment.honorCode ?? null,

@@ -733,4 +733,58 @@ describe('Local Preview Course Source', () => {
       await fs.rm(courseDir, { force: true, recursive: true });
     }
   });
+
+  it('redacts secret-bearing diagnostic fields recursively while preserving useful context', async () => {
+    const courseDir = await makeCourseRoot({
+      name: 'TST 101',
+      title: 'Preview source testing',
+      topics: [{ color: 'blue1', name: 'Testing' }],
+    });
+
+    try {
+      const source = await createLocalPreviewCourseSource(courseDir);
+      assert.deepEqual(
+        source.sanitizeDiagnosticValue({
+          API_KEY: 'api-key-value',
+          authorizationHeader: 'Bearer abc123',
+          cookie: 'session=private',
+          nested: [
+            {
+              clientSecret: 'client-secret-value',
+              message: `Failed below ${source.courseDir}/questions`,
+              refresh_token: 'refresh-token-value',
+            },
+            {
+              PRIVATE_key: `key stored at ${source.courseDir}/private.pem`,
+              retryCount: 2,
+            },
+          ],
+          password: 'password-value',
+          requestCredentials: { username: 'author', value: 'credential-value' },
+          sourcePath: `${source.courseDir}/questions/demo/server.py`,
+        }),
+        {
+          API_KEY: '<redacted>',
+          authorizationHeader: '<redacted>',
+          cookie: '<redacted>',
+          nested: [
+            {
+              clientSecret: '<redacted>',
+              message: 'Failed below <course>/questions',
+              refresh_token: '<redacted>',
+            },
+            {
+              PRIVATE_key: '<redacted>',
+              retryCount: 2,
+            },
+          ],
+          password: '<redacted>',
+          requestCredentials: '<redacted>',
+          sourcePath: '<course>/questions/demo/server.py',
+        },
+      );
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
 });
