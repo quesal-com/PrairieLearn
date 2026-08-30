@@ -1,8 +1,10 @@
 import nodeAssert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import * as cheerio from 'cheerio';
 import { assert, describe, it } from 'vitest';
 
 import { CodeCallerPoolUnavailableError } from '../code-caller/code-caller-shared.js';
@@ -838,6 +840,7 @@ describe('question preview document', () => {
         });
         assert.equal(correct.ok, true);
         assert.deepEqual(correct.diagnostics, []);
+        assert.equal('saveOutcome' in correct, false);
         assert.match(correct.documentHtml, /data-testid="submission-block"/);
         assert.match(correct.documentHtml, /data-testid="submission-with-feedback"/);
         assert.match(correct.documentHtml, /Submitted answer/);
@@ -871,6 +874,80 @@ describe('question preview document', () => {
         assert.equal(refreshed.ok, true);
         assert.notMatch(refreshed.documentHtml, /submission-block/);
         assert.match(refreshed.documentHtml, /class="card mb-3 grading-block d-none"/);
+      });
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('renders a submission as saved without grading when requested', async () => {
+    const courseDir = await makeTempCourse();
+    await writeGradableQuestion(
+      courseDir,
+      'demo/saved-answer',
+      '11111111-1111-4111-8111-111111111134',
+      {
+        serverPy:
+          'def generate(data):\n' +
+          '    data["correct_answers"]["ans"] = 2\n' +
+          'def grade(data):\n' +
+          '    raise Exception("saved answers must not be graded")\n',
+      },
+    );
+
+    try {
+      await withInitializedDocumentRenderer(courseDir, async (renderer) => {
+        const result = await renderer.render({
+          qid: parsePreviewQid('demo/saved-answer'),
+          submission: { rawSubmittedAnswer: { ans: '2' } },
+          submissionMode: 'save',
+          variantSeed: '1',
+        });
+
+        nodeAssert.equal(result.ok, true);
+        assert.deepEqual(result.diagnostics, []);
+        assert.equal('answerCheck' in result, false);
+        assert.deepEqual(result.saveOutcome, { kind: 'saved' });
+        assert.match(result.documentHtml, /data-testid="submission-block"/);
+        assert.match(result.documentHtml, /Submitted answer/);
+        assert.match(result.documentHtml, /saved, not graded/);
+        assert.match(result.documentHtml, /class="card mb-3 grading-block d-none"/);
+        assert.notMatch(result.documentHtml, /100%/);
+        const $ = cheerio.load(result.documentHtml);
+        assert.equal($('.question-form input[name="ans"]').attr('value'), '2');
+      });
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('returns an invalid save outcome when parsing rejects the submitted answer', async () => {
+    const courseDir = await makeTempCourse();
+    await writeGradableQuestion(
+      courseDir,
+      'demo/invalid-saved-answer',
+      '11111111-1111-4111-8111-111111111135',
+    );
+
+    try {
+      await withInitializedDocumentRenderer(courseDir, async (renderer) => {
+        const result = await renderer.render({
+          qid: parsePreviewQid('demo/invalid-saved-answer'),
+          submission: { rawSubmittedAnswer: { ans: 'banana' } },
+          submissionMode: 'save',
+          variantSeed: '1',
+        });
+
+        nodeAssert.equal(result.ok, true);
+        assert.equal('answerCheck' in result, false);
+        assert.deepEqual(result.saveOutcome, { kind: 'invalid' });
+        assert.deepEqual(result.submissionSnapshot, {
+          rawSubmittedAnswer: { ans: 'banana' },
+          workspaceGradedFiles: [],
+        });
+        assert.match(result.documentHtml, /invalid, not gradable/);
+        assert.match(result.documentHtml, /class="card mb-3 grading-block d-none"/);
+        assert.notMatch(result.documentHtml, /100%/);
       });
     } finally {
       await fs.rm(courseDir, { force: true, recursive: true });
@@ -1002,6 +1079,193 @@ describe('question preview document', () => {
           assert.deepEqual(localPreviewWorkspaces.collectCalls, [
             { qid: 'demo/workspace', variantSeed: '1' },
           ]);
+        },
+        { localPreviewWorkspaces },
+      );
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('replays a saved workspace submission from its exact file snapshot', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'demo/workspace-snapshot';
+    await writeWorkspaceQuestion(courseDir, qid, '11111111-1111-4111-8111-111111111136');
+    await writeQuestionFile(
+      courseDir,
+      qid,
+      'question.html',
+      '<pl-workspace></pl-workspace>' +
+        '<pl-number-input answers-name="ans"></pl-number-input>' +
+        '<pl-file-upload file-names="upload.txt"></pl-file-upload>' +
+        '<pl-submission-panel><pl-file-preview></pl-file-preview></pl-submission-panel>',
+    );
+    await writeQuestionFile(
+      courseDir,
+      qid,
+      'server.py',
+      'import base64\n' +
+        'def generate(data):\n' +
+        '    data["correct_answers"]["ans"] = 2\n' +
+        'def grade(data):\n' +
+        '    files = {file["name"]: base64.b64decode(file["contents"]).decode() for file in data["submitted_answers"]["_files"]}\n' +
+        '    data["score"] = 1 if data["submitted_answers"]["ans"] == 2 and files == {"starter.py": "saved workspace", "upload.txt": "saved upload"} else 0\n',
+    );
+    const savedWorkspaceFile = {
+      contents: Buffer.from('saved workspace').toString('base64'),
+      name: 'starter.py',
+    };
+    const workspaceFiles: PreviewWorkspaceGradedFilesResult = {
+      files: [savedWorkspaceFile],
+      ok: true,
+    };
+    const localPreviewWorkspaces = makeFakeWorkspaceAllocator(workspaceFiles);
+    const uploadField = `_file_upload_${createHash('sha1').update('upload.txt').digest('hex')}`;
+    const normalizedRawAnswer = {
+      ans: '2',
+      [uploadField]: JSON.stringify([
+        {
+          contents: Buffer.from('saved upload').toString('base64'),
+          name: 'upload.txt',
+        },
+      ]),
+    };
+
+    try {
+      await withInitializedDocumentRenderer(
+        courseDir,
+        async (renderer) => {
+          const saved = await renderer.render({
+            qid: parsePreviewQid(qid),
+            submission: { rawSubmittedAnswer: normalizedRawAnswer },
+            submissionMode: 'save',
+            variantSeed: '1',
+          });
+
+          nodeAssert.equal(saved.ok, true);
+          assert.deepEqual(saved.saveOutcome, { kind: 'saved' });
+          nodeAssert.ok(saved.submissionSnapshot);
+          assert.deepEqual(saved.submissionSnapshot, {
+            rawSubmittedAnswer: normalizedRawAnswer,
+            workspaceGradedFiles: [savedWorkspaceFile],
+          });
+
+          workspaceFiles.files[0] = {
+            contents: Buffer.from('edited workspace').toString('base64'),
+            name: 'starter.py',
+          };
+          const replayed = await renderer.render({
+            qid: parsePreviewQid(qid),
+            submission: { snapshot: saved.submissionSnapshot },
+            submissionMode: 'grade',
+            variantSeed: '1',
+          });
+
+          nodeAssert.equal(replayed.ok, true);
+          assert.deepEqual(replayed.answerCheck, { kind: 'graded', score: 1 });
+          assert.match(replayed.documentHtml, /upload\.txt/);
+          assert.match(replayed.documentHtml, /starter\.py/);
+          assert.deepEqual(localPreviewWorkspaces.collectCalls, [{ qid, variantSeed: '1' }]);
+        },
+        { localPreviewWorkspaces },
+      );
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('replays an invalid saved workspace submission without observing later files', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'demo/invalid-workspace-snapshot';
+    await writeWorkspaceQuestion(courseDir, qid, '11111111-1111-4111-8111-111111111137');
+    const workspaceFiles: PreviewWorkspaceGradedFilesResult = { files: [], ok: true };
+    const localPreviewWorkspaces = makeFakeWorkspaceAllocator(workspaceFiles);
+
+    try {
+      await withInitializedDocumentRenderer(
+        courseDir,
+        async (renderer) => {
+          const saved = await renderer.render({
+            qid: parsePreviewQid(qid),
+            submission: { rawSubmittedAnswer: { ans: '2' } },
+            submissionMode: 'save',
+            variantSeed: '1',
+          });
+
+          nodeAssert.equal(saved.ok, true);
+          assert.deepEqual(saved.saveOutcome, { kind: 'invalid' });
+          nodeAssert.ok(saved.submissionSnapshot);
+          assert.deepEqual(saved.submissionSnapshot, {
+            rawSubmittedAnswer: { ans: '2' },
+            workspaceGradedFiles: [],
+          });
+
+          workspaceFiles.files.push({
+            contents: Buffer.from('created after save').toString('base64'),
+            name: 'starter.py',
+          });
+          const replayed = await renderer.render({
+            qid: parsePreviewQid(qid),
+            submission: { snapshot: saved.submissionSnapshot },
+            submissionMode: 'save',
+            variantSeed: '1',
+          });
+
+          nodeAssert.equal(replayed.ok, true);
+          assert.deepEqual(replayed.saveOutcome, { kind: 'invalid' });
+          assert.deepEqual(replayed.submissionSnapshot, saved.submissionSnapshot);
+          assert.deepEqual(localPreviewWorkspaces.collectCalls, [{ qid, variantSeed: '1' }]);
+        },
+        { localPreviewWorkspaces },
+      );
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
+    }
+  });
+
+  it('replays a saved workspace collection error without observing a later result', async () => {
+    const courseDir = await makeTempCourse();
+    const qid = 'demo/workspace-error-snapshot';
+    await writeWorkspaceQuestion(courseDir, qid, '11111111-1111-4111-8111-111111111138');
+    const collectionError = 'Cannot submit more than 100 files from the workspace.';
+    const workspaceFiles: PreviewWorkspaceGradedFilesResult = {
+      formatError: collectionError,
+      ok: false,
+    };
+    const localPreviewWorkspaces = makeFakeWorkspaceAllocator(workspaceFiles);
+
+    try {
+      await withInitializedDocumentRenderer(
+        courseDir,
+        async (renderer) => {
+          const saved = await renderer.render({
+            qid: parsePreviewQid(qid),
+            submission: { rawSubmittedAnswer: { ans: '2' } },
+            submissionMode: 'save',
+            variantSeed: '1',
+          });
+
+          nodeAssert.equal(saved.ok, true);
+          assert.deepEqual(saved.saveOutcome, { kind: 'invalid' });
+          nodeAssert.ok(saved.submissionSnapshot);
+          assert.deepEqual(saved.submissionSnapshot, {
+            rawSubmittedAnswer: { ans: '2' },
+            workspaceFormatErrors: { _files: [collectionError] },
+            workspaceGradedFiles: [],
+          });
+
+          workspaceFiles.formatError = 'A different collection error after Save.';
+          const replayed = await renderer.render({
+            qid: parsePreviewQid(qid),
+            submission: { snapshot: saved.submissionSnapshot },
+            submissionMode: 'save',
+            variantSeed: '1',
+          });
+
+          nodeAssert.equal(replayed.ok, true);
+          assert.deepEqual(replayed.saveOutcome, { kind: 'invalid' });
+          assert.deepEqual(replayed.submissionSnapshot, saved.submissionSnapshot);
+          assert.deepEqual(localPreviewWorkspaces.collectCalls, [{ qid, variantSeed: '1' }]);
         },
         { localPreviewWorkspaces },
       );
@@ -1337,20 +1601,24 @@ describe('question preview document', () => {
       await withInitializedDocumentRenderer(
         courseDir,
         async (renderer) => {
-          const result = await renderer.render({
-            qid: parsePreviewQid('demo/gradable'),
-            variantSeed: '1',
-            submission: { rawSubmittedAnswer: { ans: '2' } },
-          });
+          for (const submissionMode of ['grade', 'save'] as const) {
+            const result = await renderer.render({
+              qid: parsePreviewQid('demo/gradable'),
+              submission: { rawSubmittedAnswer: { ans: '2' } },
+              submissionMode,
+              variantSeed: '1',
+            });
 
-          assert.equal(result.ok, false);
-          assertGenericFailureDocument(result.documentHtml);
-          assert.equal(result.diagnostics[0].fatal, true);
-          assert.equal(result.diagnostics[0].phase, 'input');
-          assert.match(
-            result.diagnostics[0].message,
-            /Submissions are not supported in question-only render mode/,
-          );
+            assert.equal(result.ok, false, submissionMode);
+            assertGenericFailureDocument(result.documentHtml);
+            assert.equal(result.diagnostics[0].fatal, true, submissionMode);
+            assert.equal(result.diagnostics[0].phase, 'input', submissionMode);
+            assert.match(
+              result.diagnostics[0].message,
+              /Submissions are not supported in question-only render mode/,
+              submissionMode,
+            );
+          }
         },
         { renderMode: 'question-only' },
       );

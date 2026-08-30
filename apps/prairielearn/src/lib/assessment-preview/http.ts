@@ -10,7 +10,13 @@ import type {
   LocalPreviewAssessmentCourseSource,
   LocalPreviewCourseResource,
 } from '../question-preview/course-source.js';
-import type { QuestionPreviewDocumentResult } from '../question-preview/document.js';
+import {
+  QUESTION_PREVIEW_ERROR_DOCUMENT,
+  type QuestionPreviewDiagnostic,
+  type QuestionPreviewDocumentResult,
+  type QuestionPreviewSubmissionInput,
+  type QuestionPreviewSubmissionSnapshot,
+} from '../question-preview/document.js';
 import { parseQuestionPreviewQid } from '../question-preview/qid.js';
 import type { QuestionPreviewRuntime } from '../question-preview/render.js';
 import type { QuestionPreviewServerHttpOptions } from '../question-preview/server-options.js';
@@ -35,6 +41,7 @@ interface RegisterAssessmentPreviewRoutesInput {
   courseSource: LocalPreviewAssessmentCourseSource;
   httpOptions: QuestionPreviewServerHttpOptions;
   runtime: QuestionPreviewRuntime;
+  savedSubmissionsMaxSize?: number;
   sessionPrefix: string;
   sourceWatcherFactory?: AssessmentPreviewSourceWatcherFactory;
 }
@@ -58,6 +65,10 @@ const SOURCE_WATCHER_UNAVAILABLE_DIAGNOSTIC: AssessmentPlanDiagnostic = {
   severity: 'warning',
 };
 
+const DEFAULT_ASSESSMENT_PREVIEW_SAVED_SUBMISSIONS_MAX_SIZE = 256 * 1024 * 1024;
+const RETAINED_VALUE_CONTAINER_OVERHEAD_BYTES = 16;
+const RETAINED_VALUE_PROPERTY_OVERHEAD_BYTES = 8;
+
 interface AssessmentPreviewCreateBody {
   facts?: Partial<AssessmentPreviewStudentFacts>;
   locator: { aid: string; ciid: string };
@@ -65,8 +76,187 @@ interface AssessmentPreviewCreateBody {
   seed: string;
 }
 
+interface AssessmentPreviewSavedSubmission {
+  kind: 'assessment-preview-saved-submission-v1';
+  submission: QuestionPreviewSubmissionInput;
+}
+
+const QUESTION_SUBMISSION_CONTROL_FIELDS = [
+  '__action',
+  '__assessment_preview_revision',
+  '__assessment_preview_variant_number',
+  '__csrf_token',
+  '__variant_id',
+] as const;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isQuestionPreviewSubmissionSnapshot(
+  value: unknown,
+): value is QuestionPreviewSubmissionSnapshot {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.rawSubmittedAnswer) ||
+    (value.workspaceFormatErrors !== undefined && !isRecord(value.workspaceFormatErrors)) ||
+    !Array.isArray(value.workspaceGradedFiles)
+  ) {
+    return false;
+  }
+  return value.workspaceGradedFiles.every(
+    (file) => isRecord(file) && typeof file.name === 'string' && typeof file.contents === 'string',
+  );
+}
+
+function assessmentPreviewSavedSubmissionInput(
+  value: unknown,
+): QuestionPreviewSubmissionInput | null {
+  // The preview session is in-memory, but accepting the old raw-answer shape
+  // keeps hot-reload and direct reducer fixtures compatible with this seam.
+  if (!isRecord(value)) return null;
+  if (value.kind !== 'assessment-preview-saved-submission-v1') {
+    return { rawSubmittedAnswer: value };
+  }
+  if (!isRecord(value.submission)) return null;
+  if (isRecord(value.submission.rawSubmittedAnswer)) {
+    return { rawSubmittedAnswer: value.submission.rawSubmittedAnswer };
+  }
+  if (isQuestionPreviewSubmissionSnapshot(value.submission.snapshot)) {
+    return { snapshot: value.submission.snapshot };
+  }
+  return null;
+}
+
+function makeAssessmentPreviewSavedSubmission(
+  rawSubmittedAnswer: Record<string, unknown>,
+  snapshot?: QuestionPreviewSubmissionSnapshot,
+): AssessmentPreviewSavedSubmission {
+  return {
+    kind: 'assessment-preview-saved-submission-v1',
+    submission: snapshot == null ? { rawSubmittedAnswer } : { snapshot },
+  };
+}
+
+/**
+ * Conservatively estimates retained data without serializing it into another
+ * potentially large string. Unsupported or hostile values are treated as over
+ * the limit so a renderer cannot accidentally leave an unbounded object graph
+ * in the assessment run.
+ */
+function retainedValueSizeWithinLimit(value: unknown, maxSize: number): number | null {
+  let size = 0;
+  const pending: unknown[] = [value];
+  const seen = new WeakSet<object>();
+
+  const addSize = (bytes: number): boolean => {
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxSize - size) return false;
+    size += bytes;
+    return true;
+  };
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current == null) {
+      if (!addSize(1)) return null;
+      continue;
+    }
+    if (typeof current === 'string') {
+      // UTF-8 bytes are never fewer than the JavaScript string's code units.
+      if (current.length > maxSize - size || !addSize(Buffer.byteLength(current))) return null;
+      continue;
+    }
+    if (typeof current === 'number') {
+      if (!addSize(8)) return null;
+      continue;
+    }
+    if (typeof current === 'boolean') {
+      if (!addSize(1)) return null;
+      continue;
+    }
+    if (typeof current !== 'object') return null;
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    if (!addSize(RETAINED_VALUE_CONTAINER_OVERHEAD_BYTES)) return null;
+    if (ArrayBuffer.isView(current)) {
+      if (!addSize(current.byteLength)) return null;
+      continue;
+    }
+    if (current instanceof ArrayBuffer) {
+      if (!addSize(current.byteLength)) return null;
+      continue;
+    }
+    if (current instanceof Map) {
+      for (const [key, item] of current) {
+        if (!addSize(RETAINED_VALUE_PROPERTY_OVERHEAD_BYTES)) return null;
+        pending.push(key, item);
+      }
+      continue;
+    }
+    if (current instanceof Set) {
+      for (const item of current) pending.push(item);
+      continue;
+    }
+    if (current instanceof Date) {
+      if (!addSize(8)) return null;
+      continue;
+    }
+
+    let keys: string[];
+    try {
+      const prototype = Object.getPrototypeOf(current) as object | null;
+      if (!Array.isArray(current) && prototype !== Object.prototype && prototype !== null) {
+        return null;
+      }
+      keys = Object.keys(current);
+    } catch {
+      return null;
+    }
+    for (const key of keys) {
+      if (
+        key.length > maxSize - size ||
+        !addSize(Buffer.byteLength(key) + RETAINED_VALUE_PROPERTY_OVERHEAD_BYTES)
+      ) {
+        return null;
+      }
+      try {
+        pending.push((current as Record<string, unknown>)[key]);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  return size;
+}
+
+function assessmentPreviewSavedSubmissionsFit({
+  maxSize,
+  record,
+  replacement,
+  slotId,
+}: {
+  maxSize: number;
+  record: AssessmentPreviewSessionRun;
+  replacement: AssessmentPreviewSavedSubmission;
+  slotId: string;
+}): boolean {
+  let remaining = maxSize;
+  for (const question of record.run.questions) {
+    const savedAnswer = question.slotId === slotId ? replacement : question.savedAnswer;
+    if (savedAnswer == null) continue;
+    const answerSize = retainedValueSizeWithinLimit(savedAnswer, remaining);
+    if (answerSize == null) return false;
+    remaining -= answerSize;
+  }
+  return true;
+}
+
+function stripQuestionSubmissionControlFields(
+  submission: Record<string, unknown>,
+): Record<string, unknown> {
+  return omit(submission, QUESTION_SUBMISSION_CONTROL_FIELDS);
 }
 
 function parseStudentFacts(value: unknown): Partial<AssessmentPreviewStudentFacts> | null {
@@ -166,13 +356,16 @@ function assessmentPreviewError(
   res.status(status).json({ error: { code, message } });
 }
 
-function assessmentPreviewQuestionNotEditable(res: Response): void {
-  assessmentPreviewError(
-    res,
-    409,
-    'assessment_preview_question_not_editable',
-    'This assessment question is not currently editable.',
-  );
+function requestPrefersJson(req: Request): boolean {
+  if (req.is('application/json')) return true;
+  const preferredType = req.accepts(['application/json', 'text/html', 'application/xhtml+xml']);
+  return preferredType !== 'text/html' && preferredType !== 'application/xhtml+xml';
+}
+
+function parseAssessmentPreviewQuestionIdentityField(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function assessmentPreviewMetadataError(
@@ -191,6 +384,39 @@ function assessmentPreviewMetadataError(
 
 function runUrl(sessionPrefix: string, assessmentPreviewRunId: string): string {
   return `${sessionPrefix}/assessment-preview-runs/${assessmentPreviewRunId}`;
+}
+
+function assessmentQuestionDiagnostics(
+  diagnostics: readonly QuestionPreviewDiagnostic[],
+  slotId: string,
+  qid: string,
+): AssessmentPlanDiagnostic[] {
+  return diagnostics.map((diagnostic) => ({
+    code: `question-preview-${diagnostic.phase ?? 'render'}`,
+    ...(diagnostic.data === undefined ? {} : { data: diagnostic.data }),
+    message: `${diagnostic.name}: ${diagnostic.message}`,
+    path: `questions/${qid}`,
+    severity: diagnostic.fatal ? 'error' : 'warning',
+    slotId,
+  }));
+}
+
+function assessmentQuestionExceptionDiagnostic(
+  err: unknown,
+  phase: 'grade' | 'render',
+  slotId: string,
+  qid: string,
+): AssessmentPlanDiagnostic {
+  return {
+    code: `question-preview-${phase}`,
+    message:
+      err instanceof Error
+        ? `${err.name}: ${err.message}`
+        : `The question renderer failed unexpectedly during ${phase}.`,
+    path: `questions/${qid}`,
+    severity: 'error',
+    slotId,
+  };
 }
 
 function documentView(
@@ -220,6 +446,58 @@ function documentView(
   };
 }
 
+function assessmentPreviewRequestError({
+  code,
+  courseSource,
+  finishGradingAvailable,
+  message,
+  path,
+  record,
+  req,
+  res,
+  serverDiagnostics,
+  sessionPrefix,
+  slotId,
+  status,
+}: {
+  code: string;
+  courseSource: LocalPreviewAssessmentCourseSource;
+  finishGradingAvailable: boolean;
+  message: string;
+  path: string;
+  record: AssessmentPreviewSessionRun;
+  req: Request;
+  res: Response;
+  serverDiagnostics: readonly AssessmentPlanDiagnostic[];
+  sessionPrefix: string;
+  slotId?: string;
+  status: number;
+}): void {
+  if (requestPrefersJson(req)) {
+    assessmentPreviewError(res, status, code, message);
+    return;
+  }
+
+  const url = runUrl(sessionPrefix, record.assessmentPreviewRunId);
+  res
+    .status(status)
+    .type('html')
+    .send(
+      renderAssessmentPreviewDocument(
+        documentView(courseSource, record, url, finishGradingAvailable, [
+          ...serverDiagnostics,
+          {
+            code,
+            message,
+            path,
+            severity: 'error',
+            ...(slotId == null ? {} : { slotId }),
+          },
+        ]),
+      ),
+    );
+}
+
 function sendInvalidatedRunDocument(
   res: Response,
   record: AssessmentPreviewSessionRun,
@@ -244,7 +522,7 @@ function sendFinishGradingFailureDocument(
   record: AssessmentPreviewSessionRun,
   sessionPrefix: string,
   courseSource: LocalPreviewAssessmentCourseSource,
-  serverDiagnostics: readonly AssessmentPlanDiagnostic[],
+  diagnostics: readonly AssessmentPlanDiagnostic[],
   slotId: string,
 ): void {
   const failedRecord: AssessmentPreviewSessionRun = {
@@ -269,7 +547,7 @@ function sendFinishGradingFailureDocument(
     .type('html')
     .send(
       renderAssessmentPreviewDocument(
-        documentView(courseSource, failedRecord, url, true, serverDiagnostics),
+        documentView(courseSource, failedRecord, url, true, diagnostics),
       ),
     );
 }
@@ -405,9 +683,13 @@ export function registerAssessmentPreviewRoutes({
   courseSource,
   httpOptions,
   runtime,
+  savedSubmissionsMaxSize = DEFAULT_ASSESSMENT_PREVIEW_SAVED_SUBMISSIONS_MAX_SIZE,
   sessionPrefix,
   sourceWatcherFactory = createSourceWatcher,
 }: RegisterAssessmentPreviewRoutesInput): { close(): void } {
+  if (!Number.isSafeInteger(savedSubmissionsMaxSize) || savedSubmissionsMaxSize < 1) {
+    throw new RangeError('savedSubmissionsMaxSize must be a positive safe integer.');
+  }
   const session = new AssessmentPreviewSession(courseSource);
   let sourceWatcher: AssessmentPreviewSourceWatcher | null = null;
   let serverDiagnostics: readonly AssessmentPlanDiagnostic[] = [];
@@ -622,8 +904,8 @@ export function registerAssessmentPreviewRoutes({
     res: Response,
     submission?: Record<string, unknown>,
   ) => {
-    let record = session.get(req.params.assessmentPreviewRunId);
-    if (record == null) {
+    const initialRecord = session.get(req.params.assessmentPreviewRunId);
+    if (initialRecord == null) {
       assessmentPreviewError(
         res,
         404,
@@ -632,6 +914,7 @@ export function registerAssessmentPreviewRoutes({
       );
       return;
     }
+    let record = initialRecord;
     if (record.invalidated) {
       sendInvalidatedRunDocument(
         res,
@@ -641,10 +924,6 @@ export function registerAssessmentPreviewRoutes({
         httpOptions.renderMode === 'full',
         serverDiagnostics,
       );
-      return;
-    }
-    if (submission != null && record.run.status !== 'in_progress') {
-      assessmentPreviewQuestionNotEditable(res);
       return;
     }
     if (submission == null && record.run.status === 'not_started') {
@@ -664,6 +943,55 @@ export function registerAssessmentPreviewRoutes({
       );
       return;
     }
+    const questionRequestError = (status: number, code: string, message: string): void => {
+      assessmentPreviewRequestError({
+        code,
+        courseSource,
+        finishGradingAvailable: httpOptions.renderMode === 'full',
+        message,
+        path: `questions/${slot.qid}`,
+        record,
+        req,
+        res,
+        serverDiagnostics,
+        sessionPrefix,
+        slotId: slot.id,
+        status,
+      });
+    };
+    if (submission != null && submission.__action !== 'save' && submission.__action !== 'grade') {
+      questionRequestError(400, 'invalid_submission_action', 'Expected the save or grade action.');
+      return;
+    }
+    if (submission != null) {
+      const submittedRevision = parseAssessmentPreviewQuestionIdentityField(
+        submission.__assessment_preview_revision,
+      );
+      const submittedVariantNumber = parseAssessmentPreviewQuestionIdentityField(
+        submission.__assessment_preview_variant_number,
+      );
+      if (
+        submittedRevision == null ||
+        submittedVariantNumber == null ||
+        submittedRevision !== record.run.revision ||
+        submittedVariantNumber !== questionState.variant.number
+      ) {
+        questionRequestError(
+          409,
+          'assessment_preview_question_conflict',
+          'The assessment preview question changed. Reload and retry.',
+        );
+        return;
+      }
+      if (record.run.status !== 'in_progress') {
+        questionRequestError(
+          409,
+          'assessment_preview_question_not_editable',
+          'This assessment question is not currently editable.',
+        );
+        return;
+      }
+    }
     if (
       submission == null &&
       (!record.access.authorized ||
@@ -675,8 +1003,7 @@ export function registerAssessmentPreviewRoutes({
     }
     const qidResult = parseQuestionPreviewQid(slot.qid);
     if (!qidResult.ok) {
-      assessmentPreviewError(
-        res,
+      questionRequestError(
         422,
         'question_unavailable',
         'This assessment question is not a local question.',
@@ -685,8 +1012,7 @@ export function registerAssessmentPreviewRoutes({
     }
     if (submission != null) {
       if (!record.access.authorized || !record.access.submittable) {
-        assessmentPreviewError(
-          res,
+        questionRequestError(
           403,
           'assessment_not_submittable',
           'The simulated access rules do not allow submissions.',
@@ -694,8 +1020,7 @@ export function registerAssessmentPreviewRoutes({
         return;
       }
       if (!record.access.visibility.showQuestions) {
-        assessmentPreviewError(
-          res,
+        questionRequestError(
           403,
           'assessment_questions_hidden',
           "The simulated access rules hide this assessment's questions.",
@@ -707,42 +1032,41 @@ export function registerAssessmentPreviewRoutes({
         !questionState.open ||
         !questionState.variant.open
       ) {
-        assessmentPreviewQuestionNotEditable(res);
+        questionRequestError(
+          409,
+          'assessment_preview_question_not_editable',
+          'This assessment question is not currently editable.',
+        );
         return;
       }
     }
 
-    let renderSubmission = submission;
-    if (submission != null && !slot.allowRealTimeGrading) {
-      const answer = omit(submission, ['__action', '__csrf_token', '__variant_id']);
-      const savedRecord = session.dispatch(record.assessmentPreviewRunId, {
-        answer,
-        slotId: slot.id,
-        type: 'save',
-      });
-      if (savedRecord == null) {
-        const latestRecord = session.get(record.assessmentPreviewRunId);
-        if (latestRecord?.invalidated) {
-          sendInvalidatedRunDocument(
-            res,
-            latestRecord,
-            sessionPrefix,
-            courseSource,
-            httpOptions.renderMode === 'full',
-            serverDiagnostics,
-          );
-        } else {
-          assessmentPreviewError(
-            res,
-            409,
-            'assessment_preview_run_unavailable',
-            'Create a new assessment preview run.',
-          );
-        }
-        return;
+    const nextGradableAtMs =
+      questionState.lastGradableAtMs === null
+        ? null
+        : questionState.lastGradableAtMs + slot.gradeRateMinutes * 60_000;
+    const gradeRateLimited =
+      submission?.__action === 'grade' &&
+      slot.allowRealTimeGrading &&
+      nextGradableAtMs !== null &&
+      record.run.facts.nowMs < nextGradableAtMs;
+    const postedAnswer =
+      submission == null ? null : stripQuestionSubmissionControlFields(submission);
+    let didPersistPostedAnswer = false;
+    let renderSubmission: QuestionPreviewSubmissionInput | undefined =
+      postedAnswer == null ? undefined : { rawSubmittedAnswer: postedAnswer };
+    let renderSubmissionMode: 'grade' | 'save' = 'grade';
+    const shouldSavePostedAnswer =
+      submission != null &&
+      (submission.__action === 'save' || !slot.allowRealTimeGrading || gradeRateLimited);
+    if (shouldSavePostedAnswer) {
+      renderSubmissionMode = 'save';
+    } else if (submission == null) {
+      const savedSubmission = assessmentPreviewSavedSubmissionInput(questionState.savedAnswer);
+      if (savedSubmission != null) {
+        renderSubmission = savedSubmission;
+        renderSubmissionMode = 'save';
       }
-      record = savedRecord;
-      renderSubmission = undefined;
     }
 
     const renderRecord = record;
@@ -751,19 +1075,31 @@ export function registerAssessmentPreviewRoutes({
         preferences: slot.preferences,
         qid: qidResult.qid,
         renderMode: httpOptions.renderMode,
-        submission:
-          renderSubmission == null
-            ? undefined
-            : {
-                rawSubmittedAnswer: omit(renderSubmission, [
-                  '__action',
-                  '__csrf_token',
-                  '__variant_id',
-                ]),
-              },
+        submission: renderSubmission,
+        submissionMode: renderSubmissionMode,
         variantSeed: variantSeed(renderRecord, slot.id),
       });
-    const result = await beforeTimeout(render, httpOptions.questionTimeoutMilliseconds);
+    let result: QuestionPreviewDocumentResult;
+    try {
+      result = await beforeTimeout(render, httpOptions.questionTimeoutMilliseconds);
+    } catch (err) {
+      console.error('Assessment question rendering failed.', err);
+      const url = runUrl(sessionPrefix, renderRecord.assessmentPreviewRunId);
+      res
+        .status(500)
+        .type('html')
+        .send(
+          augmentAssessmentPreviewQuestionDocument({
+            ...documentView(courseSource, renderRecord, url, httpOptions.renderMode === 'full', [
+              ...serverDiagnostics,
+              assessmentQuestionExceptionDiagnostic(err, 'render', slot.id, qidResult.qid.decoded),
+            ]),
+            questionDocumentHtml: QUESTION_PREVIEW_ERROR_DOCUMENT,
+            slotId: slot.id,
+          }),
+        );
+      return;
+    }
     const latestRecord = session.get(record.assessmentPreviewRunId);
     if (latestRecord == null) {
       assessmentPreviewError(
@@ -786,8 +1122,8 @@ export function registerAssessmentPreviewRoutes({
       return;
     }
     if (latestRecord.run.revision !== renderRecord.run.revision) {
-      assessmentPreviewError(
-        res,
+      record = latestRecord;
+      questionRequestError(
         409,
         'revision_conflict',
         'The assessment preview run changed. Reload and retry.',
@@ -796,13 +1132,83 @@ export function registerAssessmentPreviewRoutes({
     }
     record = latestRecord;
 
+    if (shouldSavePostedAnswer && postedAnswer != null && result.ok && result.saveOutcome != null) {
+      const answer = makeAssessmentPreviewSavedSubmission(postedAnswer, result.submissionSnapshot);
+      if (
+        !assessmentPreviewSavedSubmissionsFit({
+          maxSize: savedSubmissionsMaxSize,
+          record,
+          replacement: answer,
+          slotId: slot.id,
+        })
+      ) {
+        const url = runUrl(sessionPrefix, record.assessmentPreviewRunId);
+        res
+          .status(413)
+          .type('html')
+          .send(
+            augmentAssessmentPreviewQuestionDocument({
+              ...documentView(courseSource, record, url, httpOptions.renderMode === 'full', [
+                ...serverDiagnostics,
+                ...assessmentQuestionDiagnostics(
+                  result.diagnostics,
+                  slot.id,
+                  qidResult.qid.decoded,
+                ),
+                {
+                  code: 'assessment-preview-saved-submissions-size-limit',
+                  data: { maxSize: savedSubmissionsMaxSize },
+                  message:
+                    'This answer was not saved because the local preview run reached its saved-answer memory limit. Remove large uploaded or workspace files, or create a new preview run.',
+                  path: `questions/${qidResult.qid.decoded}`,
+                  severity: 'error',
+                  slotId: slot.id,
+                },
+              ]),
+              questionDocumentHtml: result.documentHtml,
+              slotId: slot.id,
+            }),
+          );
+        return;
+      }
+      const savedRecord = session.dispatch(record.assessmentPreviewRunId, {
+        answer,
+        gradable: result.saveOutcome.kind === 'saved',
+        slotId: slot.id,
+        type: 'save',
+      });
+      if (savedRecord == null) {
+        assessmentPreviewError(
+          res,
+          409,
+          'assessment_preview_run_unavailable',
+          'Create a new assessment preview run.',
+        );
+        return;
+      }
+      record = savedRecord;
+      didPersistPostedAnswer = record.run.questions.some(
+        (question) => question.slotId === slot.id && question.savedAnswer === answer,
+      );
+      if (gradeRateLimited && result.saveOutcome.kind === 'saved') {
+        record =
+          session.dispatch(record.assessmentPreviewRunId, {
+            gradable: false,
+            score: 0,
+            slotId: slot.id,
+            type: 'grade',
+          }) ?? record;
+      }
+    }
+
     if (
-      submission != null &&
+      postedAnswer != null &&
+      renderSubmissionMode === 'grade' &&
       slot.allowRealTimeGrading &&
       result.ok &&
       result.answerCheck != null
     ) {
-      const answer = omit(submission, ['__action', '__csrf_token', '__variant_id']);
+      const answer = postedAnswer;
       if (result.answerCheck.kind === 'graded') {
         record =
           session.dispatch(record.assessmentPreviewRunId, {
@@ -825,15 +1231,19 @@ export function registerAssessmentPreviewRoutes({
     }
 
     const url = runUrl(sessionPrefix, record.assessmentPreviewRunId);
+    if (submission?.__action === 'save' && didPersistPostedAnswer) {
+      // A redirect keeps refreshing a saved answer from resubmitting a now-stale
+      // form. The GET below replays the stored submission (including its exact
+      // workspace-file snapshot) and renders the same saved/invalid state.
+      res.redirect(303, req.originalUrl);
+      return;
+    }
     res.type('html').send(
       augmentAssessmentPreviewQuestionDocument({
-        ...documentView(
-          courseSource,
-          record,
-          url,
-          httpOptions.renderMode === 'full',
-          serverDiagnostics,
-        ),
+        ...documentView(courseSource, record, url, httpOptions.renderMode === 'full', [
+          ...serverDiagnostics,
+          ...assessmentQuestionDiagnostics(result.diagnostics, slot.id, qidResult.qid.decoded),
+        ]),
         questionDocumentHtml: result.documentHtml,
         slotId: slot.id,
       }),
@@ -855,15 +1265,6 @@ export function registerAssessmentPreviewRoutes({
       assessmentQuestionPath,
       express.urlencoded({ extended: false, limit: 5 * 1536 * 1024 }),
       asyncHandler(async (req, res) => {
-        if (req.body?.__action !== 'grade') {
-          assessmentPreviewError(
-            res,
-            400,
-            'invalid_submission_action',
-            'Expected the grade action.',
-          );
-          return;
-        }
         await questionHandler(req, res, req.body ?? {});
       }),
     );
@@ -875,7 +1276,7 @@ export function registerAssessmentPreviewRoutes({
     express.json({ limit: '16kb', strict: true }),
     asyncHandler(async (req, res) => {
       const record = session.get(req.params.assessmentPreviewRunId);
-      if (record == null || record.invalidated) {
+      if (record == null) {
         assessmentPreviewError(
           res,
           409,
@@ -884,10 +1285,44 @@ export function registerAssessmentPreviewRoutes({
         );
         return;
       }
+      if (record.invalidated) {
+        if (requestPrefersJson(req)) {
+          assessmentPreviewError(
+            res,
+            409,
+            'assessment_preview_run_unavailable',
+            'Create a new assessment preview run.',
+          );
+        } else {
+          sendInvalidatedRunDocument(
+            res,
+            record,
+            sessionPrefix,
+            courseSource,
+            httpOptions.renderMode === 'full',
+            serverDiagnostics,
+          );
+        }
+        return;
+      }
+      const actionRequestError = (status: number, code: string, message: string): void => {
+        assessmentPreviewRequestError({
+          code,
+          courseSource,
+          finishGradingAvailable: httpOptions.renderMode === 'full',
+          message,
+          path: 'assessment-preview/actions',
+          record,
+          req,
+          res,
+          serverDiagnostics,
+          sessionPrefix,
+          status,
+        });
+      };
       const revision = Number(req.body?.revision);
       if (!Number.isInteger(revision) || revision !== record.run.revision) {
-        assessmentPreviewError(
-          res,
+        actionRequestError(
           409,
           'revision_conflict',
           'The assessment preview run changed. Reload and retry.',
@@ -902,11 +1337,10 @@ export function registerAssessmentPreviewRoutes({
         return;
       }
       if (
-        (action === 'new-variant' || action === 'cross-lockpoint') &&
+        (action === 'finish' || action === 'new-variant' || action === 'cross-lockpoint') &&
         (!record.access.authorized || !record.access.submittable)
       ) {
-        assessmentPreviewError(
-          res,
+        actionRequestError(
           403,
           'assessment_not_submittable',
           'The simulated access rules do not allow this assessment action.',
@@ -916,8 +1350,7 @@ export function registerAssessmentPreviewRoutes({
       let updated: AssessmentPreviewSessionRun | null = null;
       if (action === 'start') {
         if (!record.access.authorized || !record.access.submittable) {
-          assessmentPreviewError(
-            res,
+          actionRequestError(
             403,
             'assessment_not_submittable',
             'The simulated access rules do not allow this assessment to start.',
@@ -929,8 +1362,7 @@ export function registerAssessmentPreviewRoutes({
           req.body?.honorCodeAccepted === 'true' ||
           req.body?.honorCodeAccepted === 'on';
         if (record.run.plan.requireHonorCode && !acceptedHonorCode) {
-          assessmentPreviewError(
-            res,
+          actionRequestError(
             403,
             'honor_code_required',
             'Accept the assessment honor code before starting the preview run.',
@@ -938,8 +1370,7 @@ export function registerAssessmentPreviewRoutes({
           return;
         }
         if (record.access.password != null && req.body?.password !== record.access.password) {
-          assessmentPreviewError(
-            res,
+          actionRequestError(
             403,
             'invalid_assessment_password',
             'The assessment password is incorrect.',
@@ -968,7 +1399,7 @@ export function registerAssessmentPreviewRoutes({
       }
       if (action === 'finish') {
         const finishGradeActions: {
-          answer: Record<string, unknown>;
+          answer: unknown;
           gradable: boolean;
           mode: 'finish';
           score: number;
@@ -977,10 +1408,11 @@ export function registerAssessmentPreviewRoutes({
         }[] = [];
         for (const question of record.run.questions) {
           const slot = session.slot(record, question.slotId);
+          const savedSubmission = assessmentPreviewSavedSubmissionInput(question.savedAnswer);
           if (
             slot?.grading.kind !== 'internal' ||
-            slot.allowRealTimeGrading ||
-            !isRecord(question.savedAnswer)
+            question.status !== 'saved' ||
+            savedSubmission == null
           ) {
             continue;
           }
@@ -996,7 +1428,8 @@ export function registerAssessmentPreviewRoutes({
                   preferences: slot.preferences,
                   qid: qidResult.qid,
                   renderMode: httpOptions.renderMode,
-                  submission: { rawSubmittedAnswer: savedAnswer },
+                  submission: savedSubmission,
+                  submissionMode: 'grade',
                   variantSeed: variantSeed(finishRecord, slot.id),
                 }),
               httpOptions.questionTimeoutMilliseconds,
@@ -1008,7 +1441,10 @@ export function registerAssessmentPreviewRoutes({
               finishRecord,
               sessionPrefix,
               courseSource,
-              serverDiagnostics,
+              [
+                ...serverDiagnostics,
+                assessmentQuestionExceptionDiagnostic(err, 'grade', slot.id, qidResult.qid.decoded),
+              ],
               slot.id,
             );
             return;
@@ -1042,7 +1478,14 @@ export function registerAssessmentPreviewRoutes({
               finishRecord,
               sessionPrefix,
               courseSource,
-              serverDiagnostics,
+              [
+                ...serverDiagnostics,
+                ...assessmentQuestionDiagnostics(
+                  result.diagnostics,
+                  slot.id,
+                  qidResult.qid.decoded,
+                ),
+              ],
               slot.id,
             );
             return;
@@ -1082,12 +1525,7 @@ export function registerAssessmentPreviewRoutes({
           );
           return;
         }
-        assessmentPreviewError(
-          res,
-          400,
-          'invalid_action',
-          'The assessment preview action is invalid.',
-        );
+        actionRequestError(400, 'invalid_action', 'The assessment preview action is invalid.');
         return;
       }
       if (req.is('application/json')) {

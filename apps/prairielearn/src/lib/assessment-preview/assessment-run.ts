@@ -26,7 +26,7 @@ export interface AssessmentPreviewQuestionState {
     | 'blocked_lockpoint'
     | 'read_only_lockpoint'
     | 'read_only_finished';
-  status: 'unanswered' | 'invalid' | 'incorrect' | 'correct' | 'complete';
+  status: 'unanswered' | 'invalid' | 'saved' | 'incorrect' | 'correct' | 'complete';
   open: boolean;
   savedAnswer: unknown;
   autoPoints: number;
@@ -77,7 +77,7 @@ export interface AssessmentPreviewRun {
 export type AssessmentPreviewRunAction =
   | { type: 'start' }
   | { type: 'finish' }
-  | { type: 'save'; slotId: string; answer: unknown }
+  | { type: 'save'; slotId: string; answer: unknown; gradable: boolean }
   | { type: 'new-variant'; slotId: string }
   | {
       type: 'grade';
@@ -474,6 +474,7 @@ export function reduceAssessmentPreviewRun(
       questions[questionIndex] = {
         ...question,
         savedAnswer: action.answer,
+        status: action.gradable ? 'saved' : 'invalid',
       };
       return { ...state, revision: state.revision + 1, questions };
     }
@@ -600,7 +601,7 @@ export function reduceAssessmentPreviewRun(
       if (action.answer !== undefined) question = { ...question, savedAnswer: action.answer };
       if (!action.gradable) {
         const questions = [...state.questions];
-        questions[questionIndex] = { ...question, status: 'invalid' };
+        questions[questionIndex] = { ...question, savedAnswer: null, status: 'invalid' };
         return { ...state, revision: state.revision + 1, questions };
       }
 
@@ -616,6 +617,7 @@ export function reduceAssessmentPreviewRun(
         (numTries >= slot.triesPerVariant || action.score >= 1);
       question = {
         ...question,
+        savedAnswer: null,
         numberAttempts: question.numberAttempts + 1,
         lastGradableAtMs: state.facts.nowMs,
         variant: {
