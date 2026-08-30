@@ -9,7 +9,7 @@ test('publishes to Docker Hub with dedicated credentials', async () => {
 
   assert.match(workflow, /^\s*REGISTRY: docker\.io$/m);
   assert.match(workflow, /^\s*IMAGE_NAME: quesal\/prairielearn$/m);
-  assert.equal([...workflow.matchAll(/\$\{\{ vars\.DOCKERHUB_USERNAME \}\}/g)].length, 2);
+  assert.equal([...workflow.matchAll(/\$\{\{ secrets\.DOCKERHUB_USERNAME \}\}/g)].length, 2);
   assert.equal([...workflow.matchAll(/\$\{\{ secrets\.DOCKERHUB_TOKEN \}\}/g)].length, 2);
   assert.doesNotMatch(workflow, /ghcr\.io|secrets\.GITHUB_TOKEN|packages:\s+write/);
 });
