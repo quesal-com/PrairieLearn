@@ -236,6 +236,27 @@ Relevant assessment or question source changes invalidate the active run instead
 answers with new source. Create the sample again after editing. The Local Preview Extension does
 this automatically on refresh and preserves the seed until the author selects **New sample**.
 
+The browser UI uses PrairieLearn's assessment content layout without the full application's global
+course chrome. The overview presents the sampled question table and run controls. A question page
+presents the question in the main column, with assessment score, question score, status, and
+navigation in the sidebar. Critical preview errors remain inline. **Preview details** contains
+technical run and access metadata plus sanitized diagnostic messages, paths, slot IDs, and
+structured data.
+
+In effective full mode, internally graded questions offer **Save only** and **Save & Grade**.
+**Save only** parses and saves the answer without consuming an attempt or revealing grading
+feedback; the pending answer is restored on reload. **Save & Grade** checks it immediately when
+allowed. During an active grade-rate limit, saving remains available while grading is deferred.
+Questions with `allowRealTimeGrading: false` expose **Save** and are graded when the run is finished.
+Finishing grades the latest valid pending Internal answers as one transition, then closes the run.
+Homework uses **Finish preview**; Exam uses **Finish assessment**.
+
+The run keeps only each question's latest pending saved answer and, for workspace questions, the
+exact graded-file snapshot collected by that save. These are in-memory state for the active run,
+not a submission-history ledger, and disappear with the run or session. Question forms carry the
+run revision and variant number; a stale form is rejected with `409` and must be reloaded rather
+than being applied to a newer run or variant.
+
 The simulator supports `Homework` and `Exam`, assessment text and scoped assets, seeded zone and
 pool selection, assessment-configured question preferences, attempt and point policies, and
 Internal grading through each question's native pipeline in full render mode. Modern
@@ -256,8 +277,9 @@ open local default. These limitations are intentional and visible in the run:
   structured diagnostics. Unsupported features may still produce a deliberately incomplete run.
 - There is no real enrollment, roster, accommodation, PrairieTest orchestration, saved-answer
   history, second student or attempt, gradebook write, or production Exam security.
-- The document is an authoring simulation, not an HTML or workflow replica of PrairieLearn's full
-  assessment pages.
+- The PrairieLearn-aligned content shell is an authoring simulation. It intentionally omits the
+  full application's global navigation, course-instance chrome, student identity controls, and
+  production workflow and security machinery.
 
 In the Local Preview Extension, open the assessment's exact `infoAssessment.json` file to select
 the assessment target. The preview toolbar shows the stable sample seed; **New sample** rerolls the
@@ -290,7 +312,8 @@ Answer checking and assessment finish-grading are available only for internally 
 in effective full mode. External and Manual grading are unavailable. On a standalone question
 route, checking remains stateless: it does not create or join an Assessment Preview Run,
 saved-answer history, or gradebook state. The separate assessment simulator described above keeps
-only its active run in memory. Generated and submitted files remain available only in bounded
+only its active run, latest pending answers, and associated workspace file snapshots in memory; it
+does not keep submission history. Generated and submitted files remain available only in bounded
 memory under the owning Local Preview Session.
 
 ## Resource URLs

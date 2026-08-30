@@ -1,0 +1,23 @@
+{
+  "allowRealTimeGrading": true,
+  "number": "1",
+  "requireHonorCode": false,
+  "set": "Homework",
+  "showQuestionTitles": true,
+  "shuffleQuestions": false,
+  "text": "Use this local run to verify the complete assessment flow.",
+  "title": "Standalone assessment browser contract",
+  "type": "Homework",
+  "uuid": "11111111-1111-4111-8111-111111111227",
+  "zones": [
+    {
+      "questions": [{ "autoPoints": 2, "id": "freeform/v3" }],
+      "title": "Before the lockpoint"
+    },
+    {
+      "lockpoint": true,
+      "questions": [{ "autoPoints": 3, "id": "legacy/multiple-choice" }],
+      "title": "After the lockpoint"
+    }
+  ]
+}

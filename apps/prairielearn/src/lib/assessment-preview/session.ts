@@ -139,7 +139,7 @@ function validStudentLabelNames(record: LoadedAssessmentPreviewPlan): Set<string
 }
 
 export function sanitizeAssessmentPreviewDiagnostics<
-  Diagnostic extends { message: string; path?: string; slotId?: string },
+  Diagnostic extends { data?: unknown; message: string; path?: string; slotId?: string },
 >(
   courseSource: LocalPreviewAssessmentCourseSource,
   diagnostics: readonly Diagnostic[],
@@ -151,6 +151,9 @@ export function sanitizeAssessmentPreviewDiagnostics<
 
   return diagnostics.map((diagnostic) => ({
     ...diagnostic,
+    ...(diagnostic.data === undefined
+      ? {}
+      : { data: courseSource.sanitizeDiagnosticValue(diagnostic.data) }),
     message: sanitizeString(diagnostic.message),
     ...(diagnostic.path == null ? {} : { path: sanitizeString(diagnostic.path) }),
     ...(diagnostic.slotId == null ? {} : { slotId: sanitizeString(diagnostic.slotId) }),

@@ -117,6 +117,75 @@ describe('local preview submission files', () => {
     assert.equal(retained.contents.toString(), 'second');
   });
 
+  it('evicts the least recently used submission when retained file bytes reach the limit', () => {
+    const localPreviewSubmissionFiles = new LocalPreviewSubmissionFiles({
+      max: 10,
+      maxSize: 8,
+      urlPrefix: '/preview',
+    });
+    const firstId = localPreviewSubmissionFiles.createSubmissionId();
+    localPreviewSubmissionFiles.registerFiles({
+      files: [{ contents: Buffer.from('aaa').toString('base64'), name: 'a' }],
+      id: firstId,
+    });
+    const secondId = localPreviewSubmissionFiles.createSubmissionId();
+    localPreviewSubmissionFiles.registerFiles({
+      files: [{ contents: Buffer.from('bbb').toString('base64'), name: 'b' }],
+      id: secondId,
+    });
+
+    assert.equal(
+      localPreviewSubmissionFiles.resolveRequest(submissionFileUrl(firstId, 'a'))?.found,
+      true,
+    );
+
+    const thirdId = localPreviewSubmissionFiles.createSubmissionId();
+    localPreviewSubmissionFiles.registerFiles({
+      files: [{ contents: Buffer.from('ccc').toString('base64'), name: 'c' }],
+      id: thirdId,
+    });
+
+    assert.deepEqual(localPreviewSubmissionFiles.resolveRequest(submissionFileUrl(secondId, 'b')), {
+      found: false,
+    });
+    assert.equal(
+      localPreviewSubmissionFiles.resolveRequest(submissionFileUrl(firstId, 'a'))?.found,
+      true,
+    );
+    assert.equal(
+      localPreviewSubmissionFiles.resolveRequest(submissionFileUrl(thirdId, 'c'))?.found,
+      true,
+    );
+  });
+
+  it('rejects a submission larger than the byte limit without retaining partial files', () => {
+    const localPreviewSubmissionFiles = new LocalPreviewSubmissionFiles({
+      maxSize: 4,
+      urlPrefix: '/preview',
+    });
+    const id = localPreviewSubmissionFiles.createSubmissionId();
+
+    const result = localPreviewSubmissionFiles.registerFiles({
+      files: [
+        { contents: Buffer.from('four').toString('base64'), name: 'a' },
+        { contents: Buffer.from('ignored').toString('base64'), name: 'b' },
+      ],
+      id,
+    });
+
+    assert.deepEqual(result, {
+      maxSize: 4,
+      ok: false,
+      reason: 'size-limit-exceeded',
+    });
+    assert.deepEqual(localPreviewSubmissionFiles.resolveRequest(submissionFileUrl(id, 'a')), {
+      found: false,
+    });
+    assert.deepEqual(localPreviewSubmissionFiles.resolveRequest(submissionFileUrl(id, 'b')), {
+      found: false,
+    });
+  });
+
   it('exposes a route pattern scoped to the preview question path', () => {
     const localPreviewSubmissionFiles = new LocalPreviewSubmissionFiles({ urlPrefix: '/preview' });
     assert.equal(localPreviewSubmissionFiles.routePattern, '/preview/question/*');
