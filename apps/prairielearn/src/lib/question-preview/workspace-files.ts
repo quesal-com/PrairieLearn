@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { buffer } from 'node:stream/consumers';
 
 import * as workspaceUtils from '@prairielearn/workspace-utils';
 
@@ -103,14 +104,15 @@ export async function collectPreviewWorkspaceGradedFiles({
 
   let entries;
   try {
-    entries = await workspaceUtils.getWorkspaceGradedFiles(homeDir, gradedFiles, limits);
+    entries = await workspaceUtils.openWorkspaceGradedFiles(homeDir, gradedFiles, limits);
   } catch (err) {
     return { formatError: err instanceof Error ? err.message : String(err), ok: false };
   }
 
+  await using openedEntries = entries;
   const files: PreviewWorkspaceGradedFile[] = [];
-  for (const entry of entries) {
-    const contents = await fs.readFile(path.join(homeDir, entry.path));
+  for (const entry of openedEntries) {
+    const contents = await buffer(entry.createReadStream());
     files.push({ contents: contents.toString('base64'), name: entry.path });
   }
 

@@ -35,6 +35,7 @@ describe('assessment preview access', () => {
     });
 
     expect(result).toMatchObject({
+      authorization: 'granted',
       authorized: true,
       credit: 100,
       source: 'preview-default',
@@ -48,6 +49,7 @@ describe('assessment preview access', () => {
     expect(
       evaluateAssessmentPreviewAccess({ assessment, facts: studentFacts, timezone: 'UTC' }),
     ).toMatchObject({
+      authorization: 'denied',
       authorized: false,
       diagnostics: [],
       source: 'modern-access-control',
@@ -60,6 +62,7 @@ describe('assessment preview access', () => {
         timezone: 'UTC',
       }),
     ).toMatchObject({
+      authorization: 'granted',
       authorized: true,
       credit: 100,
       diagnostics: [],
@@ -221,6 +224,32 @@ describe('assessment preview access', () => {
 
     expect(result.examAccessEnd).toBeNull();
     expect(result.visibilitySource).not.toBe('prairieTest');
+  });
+
+  it('requires a completed instance for PrairieTest review outside a reservation', () => {
+    const assessment = assessmentWithAccessControl([
+      {
+        afterComplete: { questions: { hidden: false } },
+        integrations: {
+          prairieTest: {
+            exams: [{ examUuid: '11111111-1111-4111-8111-111111111186' }],
+          },
+        },
+      },
+    ]);
+
+    const result = evaluateAssessmentPreviewAccess({
+      assessment,
+      facts: studentFacts,
+      timezone: 'UTC',
+    });
+
+    expect(result).toMatchObject({
+      authorization: 'requires-completed-instance',
+      authorized: false,
+      submittable: false,
+      visibility: { showQuestions: false, showScore: false },
+    });
   });
 
   it('keeps a PrairieTest reservation active through its inclusive end instant', () => {

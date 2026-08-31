@@ -6,6 +6,7 @@ import {
   type AssessmentPreviewAccessResult,
   type AssessmentPreviewStudentFacts,
   evaluateAssessmentPreviewAccess,
+  resolveAssessmentPreviewAuthorization,
 } from './access.js';
 import { type AssessmentPlanDiagnostic, type AssessmentPlanSlot } from './assessment-plan.js';
 import {
@@ -104,12 +105,15 @@ function factsReuseKey(facts: Partial<AssessmentPreviewStudentFacts> | undefined
 
 function afterFinishAccess(access: AssessmentPreviewAccessResult): AssessmentPreviewAccessResult {
   if (access.visibilitySource === 'prairieTest') return access;
+  const authorized = resolveAssessmentPreviewAuthorization(access.authorization, true);
   return {
     ...access,
+    authorized,
     complete: true,
     creditDateString: 'None',
     password: null,
     submittable: false,
+    showBeforeRelease: authorized ? false : access.showBeforeRelease,
     timeLimitMin: null,
     visibility: access.afterCompleteVisibility,
     visibilitySource: 'afterComplete',
