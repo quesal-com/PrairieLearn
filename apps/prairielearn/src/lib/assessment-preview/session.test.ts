@@ -765,4 +765,45 @@ describe('AssessmentPreviewSession', () => {
       visibilitySource: 'prairieTest',
     });
   });
+
+  it('authorizes PrairieTest review after the preview run finishes', async () => {
+    const prairieTestAssessment = AssessmentJsonSchema.parse({
+      ...assessment,
+      accessControl: [
+        {
+          afterComplete: { questions: { hidden: false } },
+          integrations: {
+            prairieTest: {
+              exams: [{ examUuid: '11111111-1111-4111-8111-111111111207' }],
+            },
+          },
+        },
+      ],
+    });
+    const session = new AssessmentPreviewSession(
+      makeCourseSource({ readAssessmentInfo: vi.fn(async () => prairieTestAssessment) }),
+    );
+    const created = await session.create({
+      facts: studentFacts(),
+      locator: locator(),
+      reuse: true,
+      seed: 'prairie-test-review',
+    });
+
+    expect(created.record.access).toMatchObject({
+      authorization: 'requires-completed-instance',
+      authorized: false,
+      visibility: { showQuestions: false },
+    });
+
+    session.dispatch(created.record.assessmentPreviewRunId, { type: 'start' });
+    const finished = session.dispatch(created.record.assessmentPreviewRunId, { type: 'finish' });
+
+    expect(finished?.access).toMatchObject({
+      authorization: 'requires-completed-instance',
+      authorized: true,
+      visibility: { showQuestions: true },
+      visibilitySource: 'afterComplete',
+    });
+  });
 });
