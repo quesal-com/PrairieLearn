@@ -2,6 +2,7 @@ import { Temporal } from '@js-temporal/polyfill';
 
 import type { AccessControlJson, AssessmentJson } from '../../schemas/index.js';
 import {
+  type AccessControlAuthorization,
   type AccessControlResolverResult,
   type AccessControlRuleInput,
   type DefaultRuleBody,
@@ -32,9 +33,24 @@ export interface EvaluateAssessmentPreviewAccessInput {
 }
 
 export type AssessmentPreviewAccessResult = AccessControlResolverResult & {
+  authorized: boolean;
   diagnostics: readonly AssessmentPlanDiagnostic[];
   source: 'modern-access-control' | 'preview-default';
 };
+
+export function resolveAssessmentPreviewAuthorization(
+  authorization: AccessControlAuthorization,
+  hasCompletedInstance: boolean,
+): boolean {
+  switch (authorization) {
+    case 'granted':
+      return true;
+    case 'denied':
+      return false;
+    case 'requires-completed-instance':
+      return hasCompletedInstance;
+  }
+}
 
 function localDate(value: string, timezone: string): Date {
   const zonedDateTime = Temporal.PlainDateTime.from(value).toZonedDateTime(timezone);
@@ -165,6 +181,7 @@ function deniedModernAccess(
   return {
     accessTimeline: [],
     afterCompleteVisibility: { showQuestions: true, showScore: true },
+    authorization: 'denied',
     authorized: false,
     complete: false,
     credit: 0,
@@ -228,6 +245,7 @@ export function evaluateAssessmentPreviewAccess({
     return {
       accessTimeline: [],
       afterCompleteVisibility: { showQuestions: true, showScore: true },
+      authorization: 'granted',
       authorized: true,
       complete: false,
       credit: 100,
@@ -269,5 +287,10 @@ export function evaluateAssessmentPreviewAccess({
     rules: makeRuntimeRules(assessment.accessControl, timezone),
   });
 
-  return { ...result, diagnostics, source: 'modern-access-control' };
+  return {
+    ...result,
+    authorized: resolveAssessmentPreviewAuthorization(result.authorization, false),
+    diagnostics,
+    source: 'modern-access-control',
+  };
 }
