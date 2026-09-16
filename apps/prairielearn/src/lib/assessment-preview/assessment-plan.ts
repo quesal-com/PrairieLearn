@@ -9,7 +9,7 @@ import { isDraftQid } from '../draft-question.js';
 import { extractDefaultPreferences } from '../question-preferences.js';
 import { validatePreferencesSchema } from '../question-settings/validation.js';
 
-export type AssessmentPlanDiagnosticSeverity = 'error' | 'warning' | 'unsupported';
+type AssessmentPlanDiagnosticSeverity = 'error' | 'warning' | 'unsupported';
 
 export interface AssessmentPlanDiagnostic {
   code: string;
@@ -37,7 +37,7 @@ export interface CompileAssessmentPlanInput {
   questions: Readonly<Record<string, AssessmentPlanQuestionMetadata | undefined>>;
 }
 
-export interface AssessmentPlanQuestionPoints {
+interface AssessmentPlanQuestionPoints {
   initialValue: number;
   maxAutoPoints: number;
   maxManualPoints: number;
@@ -45,7 +45,7 @@ export interface AssessmentPlanQuestionPoints {
   attemptValues: readonly number[] | null;
 }
 
-export type AssessmentPlanQuestionGrading =
+type AssessmentPlanQuestionGrading =
   | { kind: 'internal' }
   | { kind: 'unresolved'; method: 'External' | 'Manual' | 'missing' | 'shared' };
 
@@ -65,14 +65,14 @@ export interface AssessmentPlanSlot {
   preferences: Readonly<QuestionPreferences>;
 }
 
-export interface AssessmentPlanPool {
+interface AssessmentPlanPool {
   id: string;
   number: number;
   numberChoose: number | null;
   alternatives: readonly AssessmentPlanSlot[];
 }
 
-export interface AssessmentPlanZone {
+interface AssessmentPlanZone {
   id: string;
   number: number;
   title: string | null;
@@ -122,7 +122,7 @@ export interface SampledAssessmentPlanSlot extends AssessmentPlanSlot {
   questionNumber: string;
 }
 
-export interface SampledAssessmentPlanZone {
+interface SampledAssessmentPlanZone {
   id: string;
   number: number;
   title: string | null;

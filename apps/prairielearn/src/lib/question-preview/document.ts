@@ -71,7 +71,7 @@ export interface QuestionPreviewDocumentRenderer {
 }
 
 export type QuestionPreviewRenderMode = 'full' | 'question-only';
-export type QuestionPreviewSubmissionMode = 'grade' | 'save';
+type QuestionPreviewSubmissionMode = 'grade' | 'save';
 
 export interface QuestionPreviewDocumentRendererOptions {
   courseSource: LocalPreviewCourseSource;
@@ -91,12 +91,12 @@ export interface QuestionPreviewDiagnostic {
   stack?: string;
 }
 
-export type QuestionPreviewAnswerCheckOutcome =
+type QuestionPreviewAnswerCheckOutcome =
   | { kind: 'graded'; score: number }
   | { kind: 'invalid' }
   | { gradingMethod: Question['grading_method']; kind: 'unsupported' };
 
-export type QuestionPreviewSaveOutcome = { kind: 'saved' } | { kind: 'invalid' };
+type QuestionPreviewSaveOutcome = { kind: 'saved' } | { kind: 'invalid' };
 
 interface QuestionPreviewDocumentSuccess {
   answerCheck?: QuestionPreviewAnswerCheckOutcome;

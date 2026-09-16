@@ -8,7 +8,7 @@ import { formatStudentQuestionTitle } from '../assessment.shared.js';
 import type { AssessmentPreviewAccessResult } from './access.js';
 import type { AssessmentPreviewQuestionState, AssessmentPreviewRun } from './assessment-run.js';
 
-export type AssessmentPreviewDocumentAccessState = Pick<
+type AssessmentPreviewDocumentAccessState = Pick<
   AssessmentPreviewAccessResult,
   | 'authorized'
   | 'credit'
@@ -19,7 +19,7 @@ export type AssessmentPreviewDocumentAccessState = Pick<
   | 'visibility'
 >;
 
-export interface AssessmentPreviewDocumentDiagnostic {
+interface AssessmentPreviewDocumentDiagnostic {
   code: string;
   data?: unknown;
   message: string;
@@ -28,7 +28,7 @@ export interface AssessmentPreviewDocumentDiagnostic {
   slotId?: string;
 }
 
-export interface AssessmentPreviewInvalidationState {
+interface AssessmentPreviewInvalidationState {
   invalidated: boolean;
   message?: string;
 }

@@ -10,9 +10,9 @@ export interface AssessmentPreviewFacts {
   creditPercent: number;
 }
 
-export type AssessmentPreviewRunStatus = 'not_started' | 'in_progress' | 'finished';
+type AssessmentPreviewRunStatus = 'not_started' | 'in_progress' | 'finished';
 
-export interface AssessmentPreviewVariantState {
+interface AssessmentPreviewVariantState {
   number: number;
   numTries: number;
   open: boolean;
@@ -41,7 +41,7 @@ export interface AssessmentPreviewQuestionState {
   variant: AssessmentPreviewVariantState;
 }
 
-export interface AssessmentPreviewScore {
+interface AssessmentPreviewScore {
   points: number | null;
   scorePercent: number | null;
   subtotalPoints: number;
@@ -52,7 +52,7 @@ export interface AssessmentPreviewScore {
   unresolvedSlotIds: readonly string[];
 }
 
-export interface AssessmentPreviewRunDiagnostic {
+interface AssessmentPreviewRunDiagnostic {
   code: string;
   severity: 'error' | 'warning';
   message: string;

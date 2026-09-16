@@ -320,15 +320,15 @@ interface QuestionPreviewRequestDeadline {
   questionTimeoutMilliseconds: number;
 }
 
-function renderQuestionPreviewBeforeDeadline<T>(
+async function renderQuestionPreviewBeforeDeadline<T>(
   render: () => Promise<T>,
   deadline: QuestionPreviewRequestDeadline,
 ): Promise<T> {
   if (deadline.expired) {
-    return Promise.reject(new QuestionPreviewRequestTimeoutError());
+    throw new QuestionPreviewRequestTimeoutError();
   }
 
-  return Promise.race([Promise.resolve().then(render), deadline.exceeded]);
+  return Promise.race([render(), deadline.exceeded]);
 }
 
 /**
