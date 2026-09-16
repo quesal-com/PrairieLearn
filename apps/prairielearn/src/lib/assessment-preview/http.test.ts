@@ -132,7 +132,9 @@ describe('assessment preview HTTP routes', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+    const pendingCleanups = [...cleanups];
+    cleanups.length = 0;
+    await Promise.all(pendingCleanups.map((cleanup) => cleanup()));
   });
 
   async function startServer({

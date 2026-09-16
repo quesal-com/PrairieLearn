@@ -50,7 +50,7 @@ interface AssessmentPreviewSourceWatcher {
   close(): void;
 }
 
-export type AssessmentPreviewSourceWatcherFactory = (input: {
+type AssessmentPreviewSourceWatcherFactory = (input: {
   courseDir: string;
   sourceChanged: (sourceMtimeMs: number | null) => void;
 }) => AssessmentPreviewSourceWatcher;

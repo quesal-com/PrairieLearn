@@ -135,7 +135,7 @@ async function createAssessmentPreview(
     assessmentPreviewRunId: string;
     href: string;
   };
-  const overviewUrl = new URL(createdRunBody.href, origin).toString();
+  const overviewUrl = new URL(createdRunBody.href, origin).href;
   const actionsUrl = `${overviewUrl}actions`;
 
   let state = await readAssessmentPreviewState(request, overviewUrl);

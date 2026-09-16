@@ -193,10 +193,9 @@ export async function createLocalPreviewCourseSource(
   }
 
   async function readCourseInfoFile(): Promise<CourseJson> {
-    let infoCoursePath: string;
     let infoCourseContents: string;
     try {
-      infoCoursePath = await fs.realpath(path.join(courseDir, 'infoCourse.json'));
+      const infoCoursePath = await fs.realpath(path.join(courseDir, 'infoCourse.json'));
       if (!isPathInsideRoot(courseDir, infoCoursePath)) {
         throw new InvalidLocalPreviewCourseError(
           'Invalid Local Preview Course Source: infoCourse.json escapes the canonical course root.',

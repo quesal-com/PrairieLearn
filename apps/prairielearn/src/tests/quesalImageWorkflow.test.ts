@@ -1,8 +1,11 @@
-import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import test from 'node:test';
 
-const workflowUrl = new URL('./publish-quesal-image.yml', import.meta.url);
+import { assert, test } from 'vitest';
+
+const workflowUrl = new URL(
+  '../../../../.github/workflows/publish-quesal-image.yml',
+  import.meta.url,
+);
 
 test('publishes to Docker Hub with dedicated credentials', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
@@ -11,7 +14,7 @@ test('publishes to Docker Hub with dedicated credentials', async () => {
   assert.match(workflow, /^\s*IMAGE_NAME: quesal\/prairielearn$/m);
   assert.equal([...workflow.matchAll(/\$\{\{ secrets\.DOCKERHUB_USERNAME \}\}/g)].length, 2);
   assert.equal([...workflow.matchAll(/\$\{\{ secrets\.DOCKERHUB_TOKEN \}\}/g)].length, 2);
-  assert.doesNotMatch(workflow, /ghcr\.io|secrets\.GITHUB_TOKEN|packages:\s+write/);
+  assert.notMatch(workflow, /ghcr\.io|secrets\.GITHUB_TOKEN|packages:\s+write/);
 });
 
 test('manual releases build and tag an explicit source without moving latest', async () => {

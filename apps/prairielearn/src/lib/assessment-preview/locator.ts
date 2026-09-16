@@ -10,7 +10,7 @@ export interface AssessmentPreviewLocatorInput {
   ciid: string;
 }
 
-export interface AssessmentPreviewLocatorValidationError {
+interface AssessmentPreviewLocatorValidationError {
   input: AssessmentPreviewLocatorInput;
   message: string;
 }

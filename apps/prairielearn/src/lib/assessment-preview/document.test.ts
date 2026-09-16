@@ -413,7 +413,7 @@ describe('renderAssessmentPreviewDocument', () => {
     const detailsTrigger = $('button[data-bs-toggle="modal"]').filter(
       (_, element) =>
         $(element).attr('aria-label')?.startsWith('Preview details') === true ||
-        $(element).text().replaceAll(/\s+/g, ' ').trim().startsWith('Preview details'),
+        $(element).text().replaceAll(/\s+/g, ' ').trimStart().startsWith('Preview details'),
     );
     assert.lengthOf(detailsTrigger, 1);
     const accessibleDetailsText = [
@@ -1681,7 +1681,7 @@ describe('augmentAssessmentPreviewQuestionDocument', () => {
     const detailsTrigger = $('button[data-bs-toggle="modal"]').filter(
       (_, control) =>
         $(control).attr('aria-label') === 'Preview details' ||
-        $(control).text().replaceAll(/\s+/g, ' ').trim().startsWith('Preview details'),
+        $(control).text().replaceAll(/\s+/g, ' ').trimStart().startsWith('Preview details'),
     );
     assert.lengthOf(detailsTrigger, 1);
     assert.equal(detailsTrigger.attr('aria-label'), 'Preview details');

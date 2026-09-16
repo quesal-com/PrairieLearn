@@ -75,61 +75,62 @@ export async function resolveLegacyQuestionFilePath({
   templateDepth?: number;
 }): Promise<LegacyQuestionFilePath> {
   validateLegacyFilename(filename);
-  if (templateDepth > MAX_LEGACY_QUESTION_TEMPLATE_DEPTH) {
-    throw new Error(
-      `Template recursion exceeded maximum depth of ${MAX_LEGACY_QUESTION_TEMPLATE_DEPTH}.`,
-    );
-  }
+  let currentQuestion = question;
+  let currentTemplateDepth = templateDepth;
 
-  const questionRoot = path.join(coursePath, 'questions', question.directory);
-  const questionFile = await resolveContainedFile(questionRoot, filename);
-  if (questionFile != null) {
-    const canonicalQuestionsRoot = await fs.realpath(path.join(coursePath, 'questions'));
-    if (!isPathInsideRoot(canonicalQuestionsRoot, questionFile.rootPath)) {
-      throw new Error('Legacy question directory escapes the canonical course root.');
-    }
-    return { effectiveFilename: filename, ...questionFile };
-  }
-
-  if (question.templateDirectory != null) {
-    const templateQuestion = await lookupTemplate({
-      courseId: question.courseId,
-      directory: question.templateDirectory,
-    });
-    if (templateQuestion == null) {
+  while (true) {
+    if (currentTemplateDepth > MAX_LEGACY_QUESTION_TEMPLATE_DEPTH) {
       throw new Error(
-        `Could not find template question "${question.templateDirectory}" from question "${question.directory}".`,
+        `Template recursion exceeded maximum depth of ${MAX_LEGACY_QUESTION_TEMPLATE_DEPTH}.`,
       );
     }
-    return resolveLegacyQuestionFilePath({
-      coursePath,
-      filename,
-      lookupTemplate,
-      question: templateQuestion,
-      templateDepth: templateDepth + 1,
-    });
-  }
 
-  const suffix =
-    filename === 'client.js' ? 'Client.js' : filename === 'server.js' ? 'Server.js' : null;
-  if (suffix != null) {
-    const effectiveFilename = `${question.type}${suffix}`;
-    const defaultFile = await resolveContainedFile(
-      DEFAULT_LEGACY_QUESTION_FILES_PATH,
-      effectiveFilename,
-    );
-    if (defaultFile == null) {
-      throw new Error(`Default legacy question file "${effectiveFilename}" was not found.`);
+    const questionRoot = path.join(coursePath, 'questions', currentQuestion.directory);
+    const questionFile = await resolveContainedFile(questionRoot, filename);
+    if (questionFile != null) {
+      const canonicalQuestionsRoot = await fs.realpath(path.join(coursePath, 'questions'));
+      if (!isPathInsideRoot(canonicalQuestionsRoot, questionFile.rootPath)) {
+        throw new Error('Legacy question directory escapes the canonical course root.');
+      }
+      return { effectiveFilename: filename, ...questionFile };
     }
-    return { effectiveFilename, ...defaultFile };
-  }
 
-  const courseFile = await resolveContainedFile(
-    path.join(coursePath, 'clientFilesCourse'),
-    filename,
-  );
-  if (courseFile == null) {
-    throw new Error(`Legacy question file "${filename}" was not found.`);
+    if (currentQuestion.templateDirectory != null) {
+      const templateQuestion = await lookupTemplate({
+        courseId: currentQuestion.courseId,
+        directory: currentQuestion.templateDirectory,
+      });
+      if (templateQuestion == null) {
+        throw new Error(
+          `Could not find template question "${currentQuestion.templateDirectory}" from question "${currentQuestion.directory}".`,
+        );
+      }
+      currentQuestion = templateQuestion;
+      currentTemplateDepth += 1;
+      continue;
+    }
+
+    const suffix =
+      filename === 'client.js' ? 'Client.js' : filename === 'server.js' ? 'Server.js' : null;
+    if (suffix != null) {
+      const effectiveFilename = `${currentQuestion.type}${suffix}`;
+      const defaultFile = await resolveContainedFile(
+        DEFAULT_LEGACY_QUESTION_FILES_PATH,
+        effectiveFilename,
+      );
+      if (defaultFile == null) {
+        throw new Error(`Default legacy question file "${effectiveFilename}" was not found.`);
+      }
+      return { effectiveFilename, ...defaultFile };
+    }
+
+    const courseFile = await resolveContainedFile(
+      path.join(coursePath, 'clientFilesCourse'),
+      filename,
+    );
+    if (courseFile == null) {
+      throw new Error(`Legacy question file "${filename}" was not found.`);
+    }
+    return { effectiveFilename: filename, ...courseFile };
   }
-  return { effectiveFilename: filename, ...courseFile };
 }
