@@ -126,6 +126,18 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
 
+      - name: Verify Node in the published platform image
+        env:
+          PREVIEW_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm --pull always --platform '${{ matrix.platform }}' \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 64 --memory 128m \
+            --entrypoint node "$PREVIEW_IMAGE" --eval '
+              console.log(JSON.stringify({ node: process.versions.node, brotli: process.versions.brotli, arch: process.arch }));
+              require("node:assert/strict").equal(process.versions.node, "24.22.1");
+            '
+
       - name: Export digest
         run: |
           mkdir -p "${{ runner.temp }}/digests"
