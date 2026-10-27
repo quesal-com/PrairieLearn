@@ -181,12 +181,14 @@ jobs:
       - name: Install OS packages
         run: |-
           sudo apt-get update
-          sudo apt-get install -y \
-            graphviz \
-            libgraphviz-dev \
-            libgvplugin-gd-dev \
-            libgvplugin-neato-layout-dev \
-            libgvplugin-pango-dev
+          graphviz_packages=(graphviz libgraphviz-dev)
+          # Ubuntu 26.04 splits these plugins out of libgraphviz-dev.
+          for package in libgvplugin-gd-dev libgvplugin-neato-layout-dev libgvplugin-pango-dev; do
+            if apt-cache show "$package" >/dev/null 2>&1; then
+              graphviz_packages+=("$package")
+            fi
+          done
+          sudo apt-get install -y "${graphviz_packages[@]}"
 
       - name: Install additional dependencies
         run: |-
@@ -266,13 +268,14 @@ jobs:
       - name: Install OS packages
         run: |-
           sudo apt-get update
-          sudo apt-get install -y \
-            graphviz \
-            libgraphviz-dev \
-            libgvplugin-gd-dev \
-            libgvplugin-neato-layout-dev \
-            libgvplugin-pango-dev \
-            shellcheck
+          graphviz_packages=(graphviz libgraphviz-dev)
+          # Ubuntu 26.04 splits these plugins out of libgraphviz-dev.
+          for package in libgvplugin-gd-dev libgvplugin-neato-layout-dev libgvplugin-pango-dev; do
+            if apt-cache show "$package" >/dev/null 2>&1; then
+              graphviz_packages+=("$package")
+            fi
+          done
+          sudo apt-get install -y "${graphviz_packages[@]}" shellcheck
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
