@@ -7,6 +7,7 @@ import type { QuestionPreviewQid } from './qid.js';
 import type { PreviewWorkspaceSettings } from './workspace-registry.js';
 
 const PREVIEW_COURSE_ID = '1';
+const PREVIEW_COURSE_UUID = '00000000-0000-4000-8000-000000000001';
 const PREVIEW_QUESTION_ID = '1';
 const PREVIEW_USER_ID = '1';
 const DEFAULT_PREVIEW_VARIANT_ID = '1';
@@ -90,6 +91,7 @@ function makeLocalPreviewCourse(courseSource: LocalPreviewCourseSource): Course 
     sync_warnings: null,
     template_course: false,
     title: courseMetadata.title,
+    uuid: courseMetadata.uuid ?? PREVIEW_COURSE_UUID,
     yearly_enrollment_limit: null,
   };
 }
@@ -108,6 +110,8 @@ function makeLocalPreviewQuestion(qid: QuestionPreviewQid, info: QuestionJson): 
 
   return {
     client_files: info.clientFiles,
+    copied_from: info.copiedFrom ?? null,
+    copied_from_question_id: null,
     course_id: PREVIEW_COURSE_ID,
     deleted_at: null,
     dependencies: info.dependencies,

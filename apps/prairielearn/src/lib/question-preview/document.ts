@@ -115,8 +115,7 @@ export interface QuestionPreviewDocumentFailure {
 }
 
 export type QuestionPreviewDocumentResult =
-  | QuestionPreviewDocumentFailure
-  | QuestionPreviewDocumentSuccess;
+  QuestionPreviewDocumentFailure | QuestionPreviewDocumentSuccess;
 
 interface QuestionPreviewInternalRenderInput extends QuestionPreviewDocumentInput {
   courseSource: LocalPreviewCourseSource;
@@ -330,9 +329,11 @@ function renderQuestionPreviewBodyHtml({
       data-workspace-id="${variant.workspace_id ?? ''}"
       data-question-type="${question.type}"
     >
-      ${questionJsonBase64 == null
-        ? ''
-        : html`<div hidden class="question-data">${questionJsonBase64}</div>`}
+      ${
+        questionJsonBase64 == null
+          ? ''
+          : html`<div hidden class="question-data">${questionJsonBase64}</div>`
+      }
       <form class="question-form" name="question-form" method="POST" autocomplete="off">
         <div class="card mb-3 question-block">
           <div class="card-header bg-primary text-white d-flex align-items-center gap-2">
@@ -342,36 +343,42 @@ function renderQuestionPreviewBodyHtml({
           </div>
           <div class="card-body overflow-x-auto question-body">${unsafeHtml(questionHtml)}</div>
           <div class="card-footer" id="question-panel-footer">
-            ${checkAnswerSupported
-              ? html`
-                  <button
-                    type="submit"
-                    class="btn btn-primary question-grade disable-on-submit"
-                    ${questionAdapter.kind === 'freeform'
-                      ? html`name="__action" value="grade"`
-                      : ''}
-                  >
-                    Save &amp; Grade
-                  </button>
-                  <input
-                    type="hidden"
-                    name="__variant_id"
-                    value="${variant.id}"
-                    data-skip-unload-check="true"
-                  />
-                  ${questionAdapter.kind === 'legacy'
-                    ? html`
-                        <input type="hidden" name="postData" class="postData" />
-                        <input type="hidden" name="__action" class="__action" />
-                      `
-                    : ''}
-                `
-              : html`
-                  <p class="small text-muted mb-0">
-                    Save &amp; Grade is unavailable: this question uses ${question.grading_method}
-                    grading.
-                  </p>
-                `}
+            ${
+              checkAnswerSupported
+                ? html`
+                    <button
+                      type="submit"
+                      class="btn btn-primary question-grade disable-on-submit"
+                      ${
+                        questionAdapter.kind === 'freeform'
+                          ? html`name="__action" value="grade"`
+                          : ''
+                      }
+                    >
+                      Save &amp; Grade
+                    </button>
+                    <input
+                      type="hidden"
+                      name="__variant_id"
+                      value="${variant.id}"
+                      data-skip-unload-check="true"
+                    />
+                    ${
+                      questionAdapter.kind === 'legacy'
+                        ? html`
+                            <input type="hidden" name="postData" class="postData" />
+                            <input type="hidden" name="__action" class="__action" />
+                          `
+                        : ''
+                    }
+                  `
+                : html`
+                    <p class="small text-muted mb-0">
+                      Save &amp; Grade is unavailable: this question uses ${question.grading_method}
+                      grading.
+                    </p>
+                  `
+            }
           </div>
         </div>
       </form>
@@ -383,15 +390,17 @@ function renderQuestionPreviewBodyHtml({
           ${showCorrectAnswer ? unsafeHtml(answerHtml) : ''}
         </div>
       </div>
-      ${submissionPanel == null
-        ? ''
-        : renderQuestionPreviewSubmissionPanelHtml({
-            course,
-            question,
-            submissionPanel,
-            urlPrefix,
-            variant,
-          })}
+      ${
+        submissionPanel == null
+          ? ''
+          : renderQuestionPreviewSubmissionPanelHtml({
+              course,
+              question,
+              submissionPanel,
+              urlPrefix,
+              variant,
+            })
+      }
     </div>
   `.toString();
 }
@@ -414,9 +423,11 @@ function renderQuestionOnlyPreviewBodyHtml({
       data-workspace-id="${variant.workspace_id ?? ''}"
       data-question-type="${questionType}"
     >
-      ${questionJsonBase64 == null
-        ? ''
-        : html`<div hidden class="question-data">${questionJsonBase64}</div>`}
+      ${
+        questionJsonBase64 == null
+          ? ''
+          : html`<div hidden class="question-data">${questionJsonBase64}</div>`
+      }
       <div class="question-body">${unsafeHtml(questionHtml)}</div>
     </div>
   `.toString();

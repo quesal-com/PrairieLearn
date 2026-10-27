@@ -196,9 +196,10 @@ function applyQuestionAccessModes({
   const crossed = new Set(crossedLockpointIds);
   const firstUncrossedLockpointNumber = sample.zones
     .filter((zone) => zone.lockpoint && !crossed.has(zone.id))
-    .reduce<
-      number | null
-    >((first, zone) => (first === null ? zone.number : Math.min(first, zone.number)), null);
+    .reduce<number | null>(
+      (first, zone) => (first === null ? zone.number : Math.min(first, zone.number)),
+      null,
+    );
   const crossedLockpointNumbers = sample.zones
     .filter((zone) => crossed.has(zone.id))
     .map((zone) => zone.number);
@@ -237,25 +238,23 @@ export function createAssessmentPreviewRun(
   const { sample } = sampleAssessmentPlan(plan, seed);
   if (!sample) throw new Error('Unable to sample assessment plan without pins.');
 
-  const initialQuestions = sample.selectedSlots.map(
-    (slot): AssessmentPreviewQuestionState => ({
-      slotId: slot.id,
-      accessMode: 'default',
-      status: 'unanswered',
-      open: true,
-      savedAnswer: null,
-      autoPoints: 0,
-      manualPoints: slot.points.maxManualPoints > 0 ? null : 0,
-      currentValue: slot.points.initialValue,
-      pointsList: slot.points.attemptValues ? [...slot.points.attemptValues] : null,
-      pointsListOriginal: slot.points.attemptValues ? [...slot.points.attemptValues] : null,
-      variantsPointsList: [],
-      highestSubmissionScore: 0,
-      numberAttempts: 0,
-      lastGradableAtMs: null,
-      variant: { number: 1, numTries: 0, open: true },
-    }),
-  );
+  const initialQuestions = sample.selectedSlots.map((slot): AssessmentPreviewQuestionState => ({
+    slotId: slot.id,
+    accessMode: 'default',
+    status: 'unanswered',
+    open: true,
+    savedAnswer: null,
+    autoPoints: 0,
+    manualPoints: slot.points.maxManualPoints > 0 ? null : 0,
+    currentValue: slot.points.initialValue,
+    pointsList: slot.points.attemptValues ? [...slot.points.attemptValues] : null,
+    pointsListOriginal: slot.points.attemptValues ? [...slot.points.attemptValues] : null,
+    variantsPointsList: [],
+    highestSubmissionScore: 0,
+    numberAttempts: 0,
+    lastGradableAtMs: null,
+    variant: { number: 1, numTries: 0, open: true },
+  }));
   const questions = applyQuestionAccessModes({
     sample,
     questions: initialQuestions,

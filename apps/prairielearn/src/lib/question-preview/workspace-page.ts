@@ -111,23 +111,25 @@ export function renderPreviewWorkspacePageHtml({
           data-status-url="${urls.statusUrl}"
           data-workspace-id="${entry.id}"
         >
-          ${entry.fileGenerationErrors.length === 0
-            ? ''
-            : html`
-                <div class="alert alert-warning rounded-0 mb-0" role="alert">
-                  <strong>Workspace file errors:</strong>
-                  <ul class="mb-0">
-                    ${entry.fileGenerationErrors.map(
-                      (error) => html`<li><code>${error.file}</code>: ${error.msg}</li>`,
-                    )}
-                  </ul>
-                </div>
-              `}
+          ${
+            entry.fileGenerationErrors.length === 0
+              ? ''
+              : html`
+                  <div class="alert alert-warning rounded-0 mb-0" role="alert">
+                    <strong>Workspace file errors:</strong>
+                    <ul class="mb-0">
+                      ${entry.fileGenerationErrors.map(
+                        (error) => html`<li><code>${error.file}</code>: ${error.msg}</li>`,
+                      )}
+                    </ul>
+                  </div>
+                `
+          }
           <div
             id="workspace-waiting-panel"
-            class="d-flex flex-column align-items-center justify-content-center flex-grow-1 gap-3 ${waiting
-              ? ''
-              : 'd-none'}"
+            class="d-flex flex-column align-items-center justify-content-center flex-grow-1 gap-3 ${
+              waiting ? '' : 'd-none'
+            }"
           >
             <div class="spinner-border" role="status">
               <span class="visually-hidden">Loading workspace</span>
@@ -138,10 +140,9 @@ export function renderPreviewWorkspacePageHtml({
           </div>
           <div
             id="workspace-stopped-panel"
-            class="d-flex flex-column align-items-center justify-content-center flex-grow-1 gap-3 ${running ||
-            waiting
-              ? 'd-none'
-              : ''}"
+            class="d-flex flex-column align-items-center justify-content-center flex-grow-1 gap-3 ${
+              running || waiting ? 'd-none' : ''
+            }"
           >
             <p id="workspace-stopped-message" class="mb-0">${entry.message}</p>
             <a class="btn btn-primary" href="">Relaunch workspace</a>

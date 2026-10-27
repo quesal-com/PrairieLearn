@@ -24,6 +24,7 @@ interface LocalPreviewCourseMetadata {
   options: CourseJson['options'];
   timezone: string;
   title: string;
+  uuid?: string;
 }
 
 export type LocalPreviewCourseResource =
@@ -391,6 +392,7 @@ export async function createLocalPreviewCourseSource(
       options: infoCourse.options,
       timezone: infoCourse.timezone ?? 'UTC',
       title: infoCourse.title,
+      ...(infoCourse.uuid == null ? {} : { uuid: infoCourse.uuid }),
     },
     async readAssessmentInfo(locator) {
       const { assessmentDir } = await resolveAssessmentDirectories(locator);

@@ -596,8 +596,7 @@ function createQuestionPreviewApp({
   app.enable('strict routing');
 
   let workspaceUpgradeHandler:
-    | ((req: IncomingMessage, socket: Duplex, head: Buffer) => void)
-    | null = null;
+    ((req: IncomingMessage, socket: Duplex, head: Buffer) => void) | null = null;
   let closeWorkspaceProxy = () => {};
   if (workspaceManager != null) {
     const workspaceProxy = makePreviewWorkspaceProxy({

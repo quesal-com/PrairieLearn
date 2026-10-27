@@ -1,11 +1,7 @@
 const WORKSPACE_PATH_PREFIX = '/workspace/';
 
 export type PreviewWorkspaceState =
-  | 'uninitialized'
-  | 'stopped'
-  | 'launching'
-  | 'running'
-  | 'failed';
+  'uninitialized' | 'stopped' | 'launching' | 'running' | 'failed';
 
 export interface PreviewWorkspaceSettings {
   args: string | null;

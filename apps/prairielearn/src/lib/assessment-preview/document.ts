@@ -260,14 +260,16 @@ function renderPreviewDetailsTrigger(view: AssessmentPreviewDocumentView) {
       aria-label="Preview details${diagnostics.length === 0 ? '' : `, ${diagnosticLabel}`}"
     >
       Preview details
-      ${diagnostics.length === 0
-        ? ''
-        : html`<span
-            class="badge text-bg-${hasErrors ? 'danger' : 'warning'} ms-1"
-            aria-hidden="true"
-          >
-            ${diagnostics.length}
-          </span>`}
+      ${
+        diagnostics.length === 0
+          ? ''
+          : html`<span
+              class="badge text-bg-${hasErrors ? 'danger' : 'warning'} ms-1"
+              aria-hidden="true"
+            >
+              ${diagnostics.length}
+            </span>`
+      }
     </button>
   `;
 }
@@ -303,63 +305,78 @@ function renderPreviewDetailsModal(view: AssessmentPreviewDocumentView) {
         </p>
         <p class="mb-1">
           <strong>Available credit</strong>
-          ${view.access.creditDateString ??
-          (view.access.credit == null ? 'Not available' : `${view.access.credit}%`)}
+          ${
+            view.access.creditDateString ??
+            (view.access.credit == null ? 'Not available' : `${view.access.credit}%`)
+          }
         </p>
         <p class="mb-0">
           <strong>Render capability</strong>
-          ${view.finishGradingAvailable
-            ? 'Full question rendering and finish grading'
-            : 'Question-only rendering; finish grading unavailable'}
+          ${
+            view.finishGradingAvailable
+              ? 'Full question rendering and finish grading'
+              : 'Question-only rendering; finish grading unavailable'
+          }
         </p>
       </section>
       <section class="mt-4" aria-labelledby="assessment-preview-diagnostics-heading">
         <h3 class="h5" id="assessment-preview-diagnostics-heading">Diagnostics</h3>
-        ${diagnostics.length === 0
-          ? html`<p class="mb-0 text-muted">No preview diagnostics.</p>`
-          : html`
-              <ul class="list-group list-group-flush">
-                ${diagnostics.map(
-                  (diagnostic) => html`
-                    <li class="list-group-item px-0">
-                      <span
-                        class="badge text-bg-${diagnostic.severity === 'error'
-                          ? 'danger'
-                          : 'warning'}"
-                      >
-                        ${diagnostic.severity}
-                      </span>
-                      <code>${diagnostic.code}</code>: ${diagnostic.message}
-                      ${diagnostic.path == null && diagnostic.slotId == null
-                        ? ''
-                        : html`
-                            <div class="small text-muted mt-1">
-                              ${diagnostic.path == null
-                                ? ''
-                                : html`<span class="me-3"
-                                    ><strong>Path:</strong> <code>${diagnostic.path}</code></span
-                                  >`}
-                              ${diagnostic.slotId == null
-                                ? ''
-                                : html`<span
-                                    ><strong>Slot ID:</strong>
-                                    <code>${diagnostic.slotId}</code></span
-                                  >`}
-                            </div>
-                          `}
-                      ${diagnostic.data === undefined
-                        ? ''
-                        : html`
-                            <div class="small fw-semibold mt-2">Data</div>
-                            <pre
-                              class="bg-body-tertiary border rounded p-2 mb-0 text-wrap text-break"
-                            ><code>${formatDiagnosticData(diagnostic.data)}</code></pre>
-                          `}
-                    </li>
-                  `,
-                )}
-              </ul>
-            `}
+        ${
+          diagnostics.length === 0
+            ? html`<p class="mb-0 text-muted">No preview diagnostics.</p>`
+            : html`
+                <ul class="list-group list-group-flush">
+                  ${diagnostics.map(
+                    (diagnostic) => html`
+                      <li class="list-group-item px-0">
+                        <span
+                          class="badge text-bg-${
+                            diagnostic.severity === 'error' ? 'danger' : 'warning'
+                          }"
+                        >
+                          ${diagnostic.severity}
+                        </span>
+                        <code>${diagnostic.code}</code>: ${diagnostic.message}
+                        ${
+                          diagnostic.path == null && diagnostic.slotId == null
+                            ? ''
+                            : html`
+                                <div class="small text-muted mt-1">
+                                  ${
+                                    diagnostic.path == null
+                                      ? ''
+                                      : html`<span class="me-3"
+                                          ><strong>Path:</strong>
+                                          <code>${diagnostic.path}</code></span
+                                        >`
+                                  }
+                                  ${
+                                    diagnostic.slotId == null
+                                      ? ''
+                                      : html`<span
+                                          ><strong>Slot ID:</strong>
+                                          <code>${diagnostic.slotId}</code></span
+                                        >`
+                                  }
+                                </div>
+                              `
+                        }
+                        ${
+                          diagnostic.data === undefined
+                            ? ''
+                            : html`
+                                <div class="small fw-semibold mt-2">Data</div>
+                                <pre
+                                  class="bg-body-tertiary border rounded p-2 mb-0 text-wrap text-break"
+                                ><code>${formatDiagnosticData(diagnostic.data)}</code></pre>
+                              `
+                        }
+                      </li>
+                    `,
+                  )}
+                </ul>
+              `
+        }
       </section>
     `,
     footer: html`
@@ -370,30 +387,36 @@ function renderPreviewDetailsModal(view: AssessmentPreviewDocumentView) {
 
 function renderAvailabilityAlerts(view: AssessmentPreviewDocumentView) {
   return html`
-    ${view.invalidation.invalidated
-      ? html`
-          <div class="alert alert-danger" role="alert">
-            <strong>This preview run is out of date.</strong>
-            ${view.invalidation.message ??
-            'Course sources changed after this run was created. Create a new run to continue.'}
-          </div>
-        `
-      : ''}
-    ${!view.access.authorized
-      ? html`
-          <div class="alert alert-danger" role="alert">
-            <strong>Simulated access rules deny this assessment.</strong>
-            Change the preview facts or assessment access rules before starting a run.
-          </div>
-        `
-      : !view.access.submittable
+    ${
+      view.invalidation.invalidated
         ? html`
-            <div class="alert alert-warning" role="alert">
-              The simulated access state is read-only. Questions can be reviewed, but answers cannot
-              be submitted.
+            <div class="alert alert-danger" role="alert">
+              <strong>This preview run is out of date.</strong>
+              ${
+                view.invalidation.message ??
+                'Course sources changed after this run was created. Create a new run to continue.'
+              }
             </div>
           `
-        : ''}
+        : ''
+    }
+    ${
+      !view.access.authorized
+        ? html`
+            <div class="alert alert-danger" role="alert">
+              <strong>Simulated access rules deny this assessment.</strong>
+              Change the preview facts or assessment access rules before starting a run.
+            </div>
+          `
+        : !view.access.submittable
+          ? html`
+              <div class="alert alert-warning" role="alert">
+                The simulated access state is read-only. Questions can be reviewed, but answers
+                cannot be submitted.
+              </div>
+            `
+          : ''
+    }
   `;
 }
 
@@ -410,44 +433,48 @@ function renderStartRequirements(view: AssessmentPreviewDocumentView) {
   const honorCode = view.run.plan.honorCode?.trim() || DEFAULT_HONOR_CODE;
   return html`
     <div class="assessment-preview-start-requirements mb-3">
-      ${view.run.plan.requireHonorCode
-        ? html`
-            <fieldset class="mb-3">
-              <legend class="h6">Honor code</legend>
-              <p class="honor-code">${honorCode}</p>
-              <div class="form-check">
+      ${
+        view.run.plan.requireHonorCode
+          ? html`
+              <fieldset class="mb-3">
+                <legend class="h6">Honor code</legend>
+                <p class="honor-code">${honorCode}</p>
+                <div class="form-check">
+                  <input
+                    type="checkbox"
+                    class="form-check-input"
+                    id="assessment-preview-honor-code-accepted"
+                    name="honorCodeAccepted"
+                    value="true"
+                    required
+                  />
+                  <label class="form-check-label" for="assessment-preview-honor-code-accepted">
+                    I accept this honor code.
+                  </label>
+                </div>
+              </fieldset>
+            `
+          : ''
+      }
+      ${
+        view.access.password !== null
+          ? html`
+              <div class="mb-3">
+                <label class="form-label" for="assessment-preview-password">
+                  Assessment password
+                </label>
                 <input
-                  type="checkbox"
-                  class="form-check-input"
-                  id="assessment-preview-honor-code-accepted"
-                  name="honorCodeAccepted"
-                  value="true"
+                  type="password"
+                  class="form-control"
+                  id="assessment-preview-password"
+                  name="password"
+                  autocomplete="off"
                   required
                 />
-                <label class="form-check-label" for="assessment-preview-honor-code-accepted">
-                  I accept this honor code.
-                </label>
               </div>
-            </fieldset>
-          `
-        : ''}
-      ${view.access.password !== null
-        ? html`
-            <div class="mb-3">
-              <label class="form-label" for="assessment-preview-password">
-                Assessment password
-              </label>
-              <input
-                type="password"
-                class="form-control"
-                id="assessment-preview-password"
-                name="password"
-                autocomplete="off"
-                required
-              />
-            </div>
-          `
-        : ''}
+            `
+          : ''
+      }
     </div>
   `;
 }
@@ -505,12 +532,14 @@ function renderFinishControl(view: AssessmentPreviewDocumentView) {
         class="btn btn-danger"
         name="action"
         value="finish"
-        ${disabled
-          ? html`disabled aria-disabled="true"`
-          : html`
-              data-bs-toggle="modal" data-bs-target="#${FINISH_MODAL_ID}"
-              aria-controls="${FINISH_MODAL_ID}" aria-haspopup="dialog"
-            `}
+        ${
+          disabled
+            ? html`disabled aria-disabled="true"`
+            : html`
+                data-bs-toggle="modal" data-bs-target="#${FINISH_MODAL_ID}"
+                aria-controls="${FINISH_MODAL_ID}" aria-haspopup="dialog"
+              `
+        }
       >
         ${finishActionLabel(view)}
       </button>
@@ -532,13 +561,15 @@ function renderFinishModal(view: AssessmentPreviewDocumentView) {
     title: 'All done?',
     formAction: `${normalizeRunUrl(view.runUrl)}/actions`,
     body: html`
-      ${unansweredQuestions.length === 0
-        ? ''
-        : html`
-            <div class="alert alert-warning" role="status">
-              There are still unanswered questions.
-            </div>
-          `}
+      ${
+        unansweredQuestions.length === 0
+          ? ''
+          : html`
+              <div class="alert alert-warning" role="status">
+                There are still unanswered questions.
+              </div>
+            `
+      }
       <p class="text-danger">
         <strong>Warning:</strong> You will not be able to answer any more questions after finishing
         the assessment.
@@ -638,12 +669,14 @@ function renderLockpointRow(lockpoint: AssessmentPreviewLockpointView) {
       class="btn btn-warning btn-sm text-nowrap"
       name="action"
       value="cross-lockpoint"
-      ${lockpoint.disabled
-        ? html`disabled aria-disabled="true" aria-describedby="${LOCKPOINT_REASON_ID}"`
-        : html`
-            data-bs-toggle="modal" data-bs-target="#${LOCKPOINT_MODAL_ID}"
-            aria-controls="${LOCKPOINT_MODAL_ID}" aria-haspopup="dialog"
-          `}
+      ${
+        lockpoint.disabled
+          ? html`disabled aria-disabled="true" aria-describedby="${LOCKPOINT_REASON_ID}"`
+          : html`
+              data-bs-toggle="modal" data-bs-target="#${LOCKPOINT_MODAL_ID}"
+              aria-controls="${LOCKPOINT_MODAL_ID}" aria-haspopup="dialog"
+            `
+      }
     >
       Proceed to next questions
     </button>
@@ -657,9 +690,9 @@ function renderLockpointRow(lockpoint: AssessmentPreviewLockpointView) {
         >
           <div class="d-flex">
             <i
-              class="fas fa-lock ${lockpoint.disabled
-                ? 'text-secondary'
-                : 'text-warning'} me-2 mt-1"
+              class="fas fa-lock ${
+                lockpoint.disabled ? 'text-secondary' : 'text-warning'
+              } me-2 mt-1"
               aria-hidden="true"
             ></i>
             <div>
@@ -668,23 +701,27 @@ function renderLockpointRow(lockpoint: AssessmentPreviewLockpointView) {
                 class="text-muted d-block"
                 ${lockpoint.disabled ? html`id="${LOCKPOINT_REASON_ID}"` : ''}
               >
-                ${lockpoint.disabledReason ??
-                `Proceed into ${lockpoint.label}. Previous questions will become read-only.`}
+                ${
+                  lockpoint.disabledReason ??
+                  `Proceed into ${lockpoint.label}. Previous questions will become read-only.`
+                }
               </small>
-              ${lockpoint.sequenceBlockers.length === 0
-                ? ''
-                : html`
-                    <ul class="small mb-0">
-                      ${lockpoint.sequenceBlockers.map(
-                        (slot) => html`
-                          <li>
-                            ${questionDisplayTitle(slot, slot.displayOrder, lockpoint.plan)}:
-                            ${formatPoints(slot.advanceScorePercent)}% advance score required.
-                          </li>
-                        `,
-                      )}
-                    </ul>
-                  `}
+              ${
+                lockpoint.sequenceBlockers.length === 0
+                  ? ''
+                  : html`
+                      <ul class="small mb-0">
+                        ${lockpoint.sequenceBlockers.map(
+                          (slot) => html`
+                            <li>
+                              ${questionDisplayTitle(slot, slot.displayOrder, lockpoint.plan)}:
+                              ${formatPoints(slot.advanceScorePercent)}% advance score required.
+                            </li>
+                          `,
+                        )}
+                      </ul>
+                    `
+              }
             </div>
           </div>
           ${button}
@@ -709,33 +746,37 @@ function renderLockpointModal(
         After proceeding into ${lockpoint.label}, you will not be able to submit answers to previous
         questions. You can still review your previous submissions.
       </p>
-      ${lockpoint.sequenceBlockers.length === 0
-        ? ''
-        : html`
-            <div class="alert alert-warning" role="status">
-              <strong>The advance-score sequence blocks this lockpoint.</strong>
-              <ul class="mb-0">
-                ${lockpoint.sequenceBlockers.map(
-                  (slot) => html`
-                    <li>
-                      ${questionDisplayTitle(slot, slot.displayOrder, lockpoint.plan)}:
-                      ${formatPoints(slot.advanceScorePercent)}% advance score required.
-                    </li>
-                  `,
-                )}
-              </ul>
-            </div>
-          `}
+      ${
+        lockpoint.sequenceBlockers.length === 0
+          ? ''
+          : html`
+              <div class="alert alert-warning" role="status">
+                <strong>The advance-score sequence blocks this lockpoint.</strong>
+                <ul class="mb-0">
+                  ${lockpoint.sequenceBlockers.map(
+                    (slot) => html`
+                      <li>
+                        ${questionDisplayTitle(slot, slot.displayOrder, lockpoint.plan)}:
+                        ${formatPoints(slot.advanceScorePercent)}% advance score required.
+                      </li>
+                    `,
+                  )}
+                </ul>
+              </div>
+            `
+      }
       <div class="form-check">
         <input
           class="form-check-input"
           type="checkbox"
           id="${LOCKPOINT_CONFIRM_ID}"
           required
-          ${lockpoint.disabled
-            ? html`disabled`
-            : html`onchange="document.getElementById('${LOCKPOINT_SUBMIT_ID}').disabled =
-              !this.checked"`}
+          ${
+            lockpoint.disabled
+              ? html`disabled`
+              : html`onchange="document.getElementById('${LOCKPOINT_SUBMIT_ID}').disabled =
+                !this.checked"`
+          }
         />
         <label class="form-check-label" for="${LOCKPOINT_CONFIRM_ID}">
           I understand that I will not be able to submit answers to previous questions.
@@ -783,9 +824,11 @@ function renderScore(view: AssessmentPreviewDocumentView) {
     <p class="mb-0">
       <strong>${formatPoints(score.points ?? 0)} / ${formatPoints(score.maxPoints)} points</strong>
       (${formatPoints(score.scorePercent ?? 0)}%)
-      ${score.maxBonusPoints > 0
-        ? html`with up to ${formatPoints(score.maxBonusPoints)} bonus points`
-        : ''}
+      ${
+        score.maxBonusPoints > 0
+          ? html`with up to ${formatPoints(score.maxBonusPoints)} bonus points`
+          : ''
+      }
     </p>
   `;
 }
@@ -811,18 +854,22 @@ function renderQuestionGradingLabel({
   }
 
   const automaticPoints = html`
-    ${question.status === 'saved'
-      ? html`<span class="badge text-bg-info">pending</span>`
-      : formatPoints(question.autoPoints)}
+    ${
+      question.status === 'saved'
+        ? html`<span class="badge text-bg-info">pending</span>`
+        : formatPoints(question.autoPoints)
+    }
     / ${formatPoints(slot.points.maxAutoPoints)} auto-graded points
   `;
   if (slot.points.maxManualPoints === 0) return automaticPoints;
   return html`
     ${automaticPoints};
-    ${question.manualPoints == null
-      ? html`manual points unresolved`
-      : html`${formatPoints(question.manualPoints)} / ${formatPoints(slot.points.maxManualPoints)}
-        manual points`}
+    ${
+      question.manualPoints == null
+        ? html`manual points unresolved`
+        : html`${formatPoints(question.manualPoints)} / ${formatPoints(slot.points.maxManualPoints)}
+          manual points`
+    }
   `;
 }
 
@@ -861,13 +908,15 @@ function renderQuestionTable(
           return html`
             <tbody>
               ${lockpoint?.zone.id === zone.id ? renderLockpointRow(lockpoint) : ''}
-              ${zone.title == null
-                ? ''
-                : html`
-                    <tr class="table-light">
-                      <th colspan="4" scope="rowgroup">${zone.title}</th>
-                    </tr>
-                  `}
+              ${
+                zone.title == null
+                  ? ''
+                  : html`
+                      <tr class="table-light">
+                        <th colspan="4" scope="rowgroup">${zone.title}</th>
+                      </tr>
+                    `
+              }
               ${slots.map((slot) => {
                 const slotIndex = view.run.sample.selectedSlots.findIndex(
                   (candidate) => candidate.id === slot.id,
@@ -884,35 +933,45 @@ function renderQuestionTable(
                   questionCanBeViewed(question);
                 return html`
                   <tr
-                    class="${question.accessMode === 'blocked_sequence' ||
-                    question.accessMode === 'blocked_lockpoint'
-                      ? 'table-light pl-sequence-locked'
-                      : ''}"
+                    class="${
+                      question.accessMode === 'blocked_sequence' ||
+                      question.accessMode === 'blocked_lockpoint'
+                        ? 'table-light pl-sequence-locked'
+                        : ''
+                    }"
                   >
                     <th scope="row">
-                      ${canOpenQuestion
-                        ? html`<a href="${questionUrl}"
-                            >${questionDisplayTitle(slot, slotIndex, view.run.plan)}</a
-                          >`
-                        : questionDisplayTitle(slot, slotIndex, view.run.plan)}
-                      ${question.accessMode === 'default'
-                        ? ''
-                        : html`<div class="small fw-normal">
-                            ${questionAccessLabel(question.accessMode)}
-                          </div>`}
+                      ${
+                        canOpenQuestion
+                          ? html`<a href="${questionUrl}"
+                              >${questionDisplayTitle(slot, slotIndex, view.run.plan)}</a
+                            >`
+                          : questionDisplayTitle(slot, slotIndex, view.run.plan)
+                      }
+                      ${
+                        question.accessMode === 'default'
+                          ? ''
+                          : html`<div class="small fw-normal">
+                              ${questionAccessLabel(question.accessMode)}
+                            </div>`
+                      }
                     </th>
                     <td>${formatPoints(question.currentValue ?? slot.points.maxPoints)}</td>
                     <td>
-                      ${view.access.visibility.showScore
-                        ? html`<span class="badge ${displayStatus.className} rounded-pill">
-                            ${displayStatus.label}
-                          </span>`
-                        : html`<span class="text-muted">Hidden</span>`}
+                      ${
+                        view.access.visibility.showScore
+                          ? html`<span class="badge ${displayStatus.className} rounded-pill">
+                              ${displayStatus.label}
+                            </span>`
+                          : html`<span class="text-muted">Hidden</span>`
+                      }
                     </td>
                     <td class="small text-end">
-                      ${view.access.visibility.showScore
-                        ? renderQuestionGradingLabel({ question, slot })
-                        : html`<span class="text-muted">Score hidden</span>`}
+                      ${
+                        view.access.visibility.showScore
+                          ? renderQuestionGradingLabel({ question, slot })
+                          : html`<span class="text-muted">Score hidden</span>`
+                      }
                     </td>
                   </tr>
                 `;
@@ -942,27 +1001,36 @@ function renderOverviewSummary(view: AssessmentPreviewDocumentView) {
     <div class="row align-items-center g-3">
       <div class="col-md-3 col-sm-6">
         <strong>Total points:</strong>
-        ${!view.access.visibility.showScore
-          ? formatPoints(score.maxPoints)
-          : score.points == null
-            ? html`${formatPoints(score.subtotalPoints)} / ${formatPoints(score.subtotalMaxPoints)}
-              resolved (${formatPoints(score.maxPoints)} total)`
-            : html`${formatPoints(score.points)} / ${formatPoints(score.maxPoints)}`}
-        ${score.maxBonusPoints > 0
-          ? html`<div class="small text-muted">
-              Up to ${formatPoints(score.maxBonusPoints)} bonus points
-            </div>`
-          : ''}
+        ${
+          !view.access.visibility.showScore
+            ? formatPoints(score.maxPoints)
+            : score.points == null
+              ? html`${formatPoints(score.subtotalPoints)} /
+                ${formatPoints(score.subtotalMaxPoints)} resolved (${formatPoints(score.maxPoints)}
+                total)`
+              : html`${formatPoints(score.points)} / ${formatPoints(score.maxPoints)}`
+        }
+        ${
+          score.maxBonusPoints > 0
+            ? html`<div class="small text-muted">
+                Up to ${formatPoints(score.maxBonusPoints)} bonus points
+              </div>`
+            : ''
+        }
       </div>
       <div class="col-md-5 col-sm-6">
-        ${view.access.visibility.showScore && score.scorePercent != null
-          ? ScorebarHtml(score.scorePercent, { maxWidth: '100%' })
-          : renderScore(view)}
+        ${
+          view.access.visibility.showScore && score.scorePercent != null
+            ? ScorebarHtml(score.scorePercent, { maxWidth: '100%' })
+            : renderScore(view)
+        }
       </div>
       <div class="col-md-4 col-sm-12">
         <strong>Available credit:</strong>
-        ${view.access.creditDateString ??
-        (view.access.credit == null ? 'Not available' : `${view.access.credit}%`)}
+        ${
+          view.access.creditDateString ??
+          (view.access.credit == null ? 'Not available' : `${view.access.credit}%`)
+        }
       </div>
     </div>
   `;
@@ -984,19 +1052,21 @@ function overviewContents(
       </div>
       <div class="card-body">
         ${renderOverviewSummary(view)}
-        ${view.assessmentText
-          ? html`
-              <section
-                class="card bg-light mb-0 mt-4"
-                aria-labelledby="assessment-preview-instructions"
-              >
-                <div class="card-body">
-                  <h2 class="h5" id="assessment-preview-instructions">Instructions</h2>
-                  ${renderAssessmentText(view.assessmentText, view.runUrl)}
-                </div>
-              </section>
-            `
-          : ''}
+        ${
+          view.assessmentText
+            ? html`
+                <section
+                  class="card bg-light mb-0 mt-4"
+                  aria-labelledby="assessment-preview-instructions"
+                >
+                  <div class="card-body">
+                    <h2 class="h5" id="assessment-preview-instructions">Instructions</h2>
+                    ${renderAssessmentText(view.assessmentText, view.runUrl)}
+                  </div>
+                </section>
+              `
+            : ''
+        }
       </div>
       ${renderQuestionTable(view, lockpoint)}
       <div class="card-footer d-flex flex-wrap justify-content-between align-items-center gap-3">
@@ -1137,27 +1207,33 @@ function renderAssessmentScoreCard(view: AssessmentPreviewDocumentView) {
           <tr>
             <th scope="row">Total points:</th>
             <td>
-              ${!view.access.visibility.showScore
-                ? formatPoints(score.maxPoints)
-                : score.points == null
-                  ? html`${formatPoints(score.subtotalPoints)} /
-                    ${formatPoints(score.subtotalMaxPoints)} resolved`
-                  : html`${formatPoints(score.points)} / ${formatPoints(score.maxPoints)}`}
+              ${
+                !view.access.visibility.showScore
+                  ? formatPoints(score.maxPoints)
+                  : score.points == null
+                    ? html`${formatPoints(score.subtotalPoints)} /
+                      ${formatPoints(score.subtotalMaxPoints)} resolved`
+                    : html`${formatPoints(score.points)} / ${formatPoints(score.maxPoints)}`
+              }
             </td>
           </tr>
-          ${view.access.visibility.showScore && score.scorePercent != null
-            ? html`
-                <tr>
-                  <th scope="row">Score:</th>
-                  <td>${ScorebarHtml(score.scorePercent)}</td>
-                </tr>
-              `
-            : ''}
+          ${
+            view.access.visibility.showScore && score.scorePercent != null
+              ? html`
+                  <tr>
+                    <th scope="row">Score:</th>
+                    <td>${ScorebarHtml(score.scorePercent)}</td>
+                  </tr>
+                `
+              : ''
+          }
         </tbody>
       </table>
-      ${view.access.visibility.showScore
-        ? ''
-        : html`<div class="card-footer small">${renderScore(view)}</div>`}
+      ${
+        view.access.visibility.showScore
+          ? ''
+          : html`<div class="card-footer small">${renderScore(view)}</div>`
+      }
     </section>
   `;
 }
@@ -1189,16 +1265,18 @@ function renderQuestionScoreCard({
       </div>
       <table class="table table-sm mb-0" aria-label="Question score">
         <tbody>
-          ${view.access.visibility.showScore
-            ? html`
-                <tr>
-                  <th scope="row">Status:</th>
-                  <td>
-                    <span class="badge ${displayStatus.className}">${displayStatus.label}</span>
-                  </td>
-                </tr>
-              `
-            : ''}
+          ${
+            view.access.visibility.showScore
+              ? html`
+                  <tr>
+                    <th scope="row">Status:</th>
+                    <td>
+                      <span class="badge ${displayStatus.className}">${displayStatus.label}</span>
+                    </td>
+                  </tr>
+                `
+              : ''
+          }
           <tr>
             <th scope="row">Value:</th>
             <td>${formatPoints(question.currentValue ?? slot.points.maxPoints)}</td>
@@ -1206,25 +1284,29 @@ function renderQuestionScoreCard({
           <tr>
             <th scope="row">Total points:</th>
             <td>
-              ${!view.access.visibility.showScore
-                ? html`<span class="text-muted">Score hidden</span>`
-                : question.status === 'saved'
-                  ? html`<span class="badge text-bg-info">pending</span>
-                      <small
-                        >/<span class="text-muted"
-                          >${formatPoints(slot.points.maxPoints)}</span
-                        ></small
-                      >`
-                  : scoreIsUnresolved
-                    ? renderQuestionGradingLabel({ question, slot })
-                    : html`${formatPoints(awardedPoints)} / ${formatPoints(slot.points.maxPoints)}`}
+              ${
+                !view.access.visibility.showScore
+                  ? html`<span class="text-muted">Score hidden</span>`
+                  : question.status === 'saved'
+                    ? html`<span class="badge text-bg-info">pending</span>
+                        <small
+                          >/<span class="text-muted"
+                            >${formatPoints(slot.points.maxPoints)}</span
+                          ></small
+                        >`
+                    : scoreIsUnresolved
+                      ? renderQuestionGradingLabel({ question, slot })
+                      : html`${formatPoints(awardedPoints)} / ${formatPoints(slot.points.maxPoints)}`
+              }
             </td>
           </tr>
         </tbody>
       </table>
-      ${question.accessMode === 'default'
-        ? ''
-        : html`<div class="card-footer small">${questionAccessLabel(question.accessMode)}</div>`}
+      ${
+        question.accessMode === 'default'
+          ? ''
+          : html`<div class="card-footer small">${questionAccessLabel(question.accessMode)}</div>`
+      }
     </section>
   `;
 }
@@ -1959,33 +2041,41 @@ export function augmentAssessmentPreviewQuestionDocument({
       ${renderAvailabilityAlerts(view)} ${renderCriticalDiagnostics(view)}
       <div class="row">
         <section class="col-lg-9 col-sm-12" role="region" aria-label="Question">
-          ${!originalBodyHasHeading || !canShowQuestion
-            ? html`<h1 class="h4 mb-3">${displayTitle}</h1>`
-            : ''}
-          ${canShowQuestion
-            ? html`
-                ${readOnlyReason == null
-                  ? ''
-                  : html`
-                      <div
-                        class="alert alert-warning assessment-preview-read-only-reason"
-                        role="status"
-                      >
-                        ${readOnlyReason}
-                      </div>
-                    `}
-                ${renderQuestionGradingNotice(gradingUiState, readOnlyReason != null)}
-                ${readOnlyReason != null
-                  ? html`<fieldset disabled aria-label="Read-only question preview">
-                      ${unsafeHtml(originalBody)}
-                    </fieldset>`
-                  : unsafeHtml(originalBody)}
-              `
-            : html`
-                <div class="alert alert-secondary" role="status">
-                  This question is unavailable in the current assessment preview state.
-                </div>
-              `}
+          ${
+            !originalBodyHasHeading || !canShowQuestion
+              ? html`<h1 class="h4 mb-3">${displayTitle}</h1>`
+              : ''
+          }
+          ${
+            canShowQuestion
+              ? html`
+                  ${
+                    readOnlyReason == null
+                      ? ''
+                      : html`
+                          <div
+                            class="alert alert-warning assessment-preview-read-only-reason"
+                            role="status"
+                          >
+                            ${readOnlyReason}
+                          </div>
+                        `
+                  }
+                  ${renderQuestionGradingNotice(gradingUiState, readOnlyReason != null)}
+                  ${
+                    readOnlyReason != null
+                      ? html`<fieldset disabled aria-label="Read-only question preview">
+                          ${unsafeHtml(originalBody)}
+                        </fieldset>`
+                      : unsafeHtml(originalBody)
+                  }
+                `
+              : html`
+                  <div class="alert alert-secondary" role="status">
+                    This question is unavailable in the current assessment preview state.
+                  </div>
+                `
+          }
         </section>
         ${renderQuestionSidebar({ question, slot, slotIndex, view })}
       </div>

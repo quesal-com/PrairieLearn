@@ -18,8 +18,7 @@ export interface QuestionPreviewQid {
 }
 
 export type QuestionPreviewQidParseResult =
-  | { ok: true; qid: QuestionPreviewQid }
-  | { error: QuestionPreviewQidValidationError; ok: false };
+  { ok: true; qid: QuestionPreviewQid } | { error: QuestionPreviewQidValidationError; ok: false };
 
 function questionPreviewQidValidationErrorFromSegments(
   qid: string,

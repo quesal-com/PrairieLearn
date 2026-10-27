@@ -33,15 +33,19 @@ export function QuestionHeadContents({
     />
     ${compiledScriptTag('question.ts')} ${includeCalculator ? CalculatorDrawerHeadScripts() : ''}
     ${afterQuestionScriptHtml}
-    ${loadMathJaxDeferred
-      ? html`<script defer src="${nodeModulesAssetPath('mathjax/tex-svg.js')}"></script>`
-      : html`<script src="${nodeModulesAssetPath('mathjax/tex-svg.js')}"></script>`}
+    ${
+      loadMathJaxDeferred
+        ? html`<script defer src="${nodeModulesAssetPath('mathjax/tex-svg.js')}"></script>`
+        : html`<script src="${nodeModulesAssetPath('mathjax/tex-svg.js')}"></script>`
+    }
     <script>
       document.urlPrefix = '${urlPrefix}';
     </script>
-    ${includeLegacyQuestionScripts && questionType !== 'Freeform'
-      ? legacyQuestionScripts(legacyScriptSource)
-      : ''}
+    ${
+      includeLegacyQuestionScripts && questionType !== 'Freeform'
+        ? legacyQuestionScripts(legacyScriptSource)
+        : ''
+    }
     ${unsafeHtml(extraHeadersHtml ?? '')}
   `;
 }

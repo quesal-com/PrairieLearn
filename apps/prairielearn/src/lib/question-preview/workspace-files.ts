@@ -15,8 +15,7 @@ interface PreviewWorkspaceGradedFile {
 }
 
 export type PreviewWorkspaceGradedFilesResult =
-  | { files: PreviewWorkspaceGradedFile[]; ok: true }
-  | { formatError: string; ok: false };
+  { files: PreviewWorkspaceGradedFile[]; ok: true } | { formatError: string; ok: false };
 
 export interface PreviewWorkspaceGradedFilesLimits {
   maxFiles: number;

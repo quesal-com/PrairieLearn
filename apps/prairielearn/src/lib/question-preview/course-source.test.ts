@@ -4,11 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { assert, describe, it } from 'vitest';
+import { z } from 'zod';
 
 import { parseAssessmentPreviewLocator } from '../assessment-preview/locator.js';
+import { CourseSchema, QuestionSchema } from '../db-types.js';
 
 import { createLocalPreviewCourseSource } from './course-source.js';
 import { parseQuestionPreviewQid } from './qid.js';
+import { makeLocalPreviewQuestionRows } from './rows.js';
 
 async function makeCourseRoot(infoCourse: Record<string, unknown>) {
   const courseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pl-preview-course-source-'));
@@ -89,6 +92,63 @@ describe('Local Preview Course Source', () => {
     } finally {
       await fs.rm(courseDir, { force: true, recursive: true });
       await fs.rm(linkRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    {
+      copiedFrom:
+        '11111111-1111-4111-8111-111111111181/11111111-1111-4111-8111-111111111182/Original question',
+      name: 'source UUID and copy provenance',
+      uuid: '11111111-1111-4111-8111-111111111180',
+    },
+    { copiedFrom: undefined, name: 'absent optional UUID and copy provenance', uuid: undefined },
+  ])('constructs valid, stable preview rows with $name', async ({ uuid, copiedFrom }) => {
+    const courseDir = await makeCourseRoot({
+      name: 'TST 101',
+      title: 'Preview row identity',
+      topics: [{ color: 'blue1', name: 'Testing' }],
+      uuid,
+    });
+    const qidResult = parseQuestionPreviewQid('identity');
+    if (!qidResult.ok) throw new Error(qidResult.error.message);
+
+    try {
+      const questionDir = path.join(courseDir, 'questions', 'identity');
+      await fs.mkdir(questionDir);
+      await fs.writeFile(
+        path.join(questionDir, 'info.json'),
+        JSON.stringify({
+          copiedFrom,
+          title: 'Preview provenance',
+          topic: 'Testing',
+          type: 'v3',
+          uuid: '11111111-1111-4111-8111-111111111183',
+        }),
+      );
+      const source = await createLocalPreviewCourseSource(courseDir);
+      const info = await source.readQuestionInfo(qidResult.qid);
+      const { course, question } = makeLocalPreviewQuestionRows({
+        courseSource: source,
+        info,
+        qid: qidResult.qid,
+      });
+      const reopened = makeLocalPreviewQuestionRows({
+        courseSource: await createLocalPreviewCourseSource(courseDir),
+        info,
+        qid: qidResult.qid,
+      });
+
+      CourseSchema.parse(course);
+      QuestionSchema.parse(question);
+      z.guid().parse(course.uuid);
+      assert.equal(source.courseMetadata.uuid, uuid);
+      if (uuid != null) assert.equal(course.uuid, uuid);
+      assert.equal(course.uuid, reopened.course.uuid);
+      assert.equal(question.copied_from, copiedFrom ?? null);
+      assert.isNull(question.copied_from_question_id);
+    } finally {
+      await fs.rm(courseDir, { force: true, recursive: true });
     }
   });
 

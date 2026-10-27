@@ -1,11 +1,5 @@
 export type QuestionPreviewPhase =
-  | 'input'
-  | 'metadata'
-  | 'generate'
-  | 'prepare'
-  | 'parse'
-  | 'grade'
-  | 'render';
+  'input' | 'metadata' | 'generate' | 'prepare' | 'parse' | 'grade' | 'render';
 
 export class ExpectedQuestionPreviewError extends Error {
   data?: unknown;

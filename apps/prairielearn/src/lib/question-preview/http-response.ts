@@ -222,8 +222,7 @@ export function mapQuestionPreviewGeneratedFileResponse(
 }
 
 export type QuestionPreviewSubmissionFileHttpResult =
-  | { found: false }
-  | { contentType: string; data: Buffer; found: true };
+  { found: false } | { contentType: string; data: Buffer; found: true };
 
 export function mapQuestionPreviewSubmissionFileResponse(
   result: QuestionPreviewSubmissionFileHttpResult,

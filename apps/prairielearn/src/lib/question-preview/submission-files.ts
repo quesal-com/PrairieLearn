@@ -14,12 +14,10 @@ export interface PreviewSubmittedFile {
 }
 
 export type LocalPreviewSubmissionFilesRegistrationResult =
-  | { ok: true }
-  | { maxSize: number; ok: false; reason: 'size-limit-exceeded' };
+  { ok: true } | { maxSize: number; ok: false; reason: 'size-limit-exceeded' };
 
 type QuestionPreviewSubmissionFileResolveResult =
-  | { found: false }
-  | { contents: Buffer; filename: string; found: true };
+  { found: false } | { contents: Buffer; filename: string; found: true };
 
 interface SubmissionFileRequest {
   filename: string;
